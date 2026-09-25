@@ -17,7 +17,7 @@ async function readBody(req) {
 }
 function json(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); }
 
-export function createServer({ key, backend, getModels, refresh, status, onResult = () => {} }) {
+export function createServer({ key, backend, getModels, refresh, probe, status, onResult = () => {} }) {
   const active = new Set();
   const server = http.createServer(async (req, res) => {
     if (!authorized(req, key)) return json(res, 401, { error: { message: 'Local proxy API key required', type: 'authentication_error' } });
@@ -30,6 +30,10 @@ export function createServer({ key, backend, getModels, refresh, status, onResul
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
       if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: m.id, object: 'model', owned_by: 'opencode', name: m.name })) });
+      if (req.method === 'POST' && route === '/admin/probe') {
+        const body = await readBody(req);
+        return json(res, 202, probe(body.model));
+      }
       if (req.method === 'POST' && route === '/admin/refresh') return json(res, 200, await refresh());
       if (req.method !== 'POST' || route !== '/v1/chat/completions') return json(res, 404, { error: { message: 'Not found' } });
       if (active.size > 4) throw new BridgeError('At most four requests may run at once', 429, 'busy');
@@ -49,7 +53,7 @@ export function createServer({ key, backend, getModels, refresh, status, onResul
     } catch (e) {
       if (controller.signal.aborted) return;
       const message = e.name === 'TimeoutError' ? 'Model request timed out' : e.message;
-      onResult(model || null, false, message);
+      onResult(model || null, false, message, e.status, e.code);
       const error = { message, type: e.code || 'upstream_error', code: e.code || 'upstream_error' };
       if (res.headersSent) res.end(`data: ${JSON.stringify({ error })}\n\n`);
       else json(res, e.status || 502, { error });

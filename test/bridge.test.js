@@ -154,3 +154,15 @@ test('a native action is rejected before a corrected structured response is acce
     assert.equal(result.choices[0].message.content, 'OK');
   } finally { fake.closeAllConnections(); fake.close(); }
 });
+
+test('quota, throttling, access and unknown errors remain distinct', async () => {
+  const { modelResult } = await import('../src/model-status.js');
+  assert.equal(modelResult(false, 'insufficient_quota', 429).category, 'quota');
+  assert.equal(modelResult(false, 'Too many requests', 429).category, 'rate_limit');
+  assert.equal(modelResult(false, 'Free tier only within OpenCode', 403).category, 'access');
+  assert.equal(modelResult(false, 'Model probe timed out').category, 'timeout');
+  assert.equal(modelResult(false, 'Missing file_path', 502).category, 'error');
+  assert.equal(modelResult(true).category, 'available');
+  const catalog = freeModels({ all: [{ id: 'opencode', models: { exhausted: { cost: { input: 0, output: 0 }, capabilities: { toolcall: true }, remaining: 0 } } }] });
+  assert.equal(catalog.length, 1, 'An exhausted free model stays in the catalog');
+});

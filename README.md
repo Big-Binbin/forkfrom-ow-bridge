@@ -1,10 +1,10 @@
 # Buddy Bridge
 
-macOS 托盘应用：将本机 OpenCode 包装为 OpenAI Chat Completions 接口，供 WorkBuddy 使用。独立实现，未复制 OpenCode-Wrap 的代码。
+macOS 原生窗口与托盘应用：将本机 OpenCode 包装为 OpenAI Chat Completions 接口，供 WorkBuddy 使用。独立实现，未复制 OpenCode-Wrap 的代码。
 
 ## 启动与选择模型
 
-1. 双击 `dist/Buddy Bridge.app`。菜单栏出现分支图标，无终端窗口。
+1. 双击 `dist/Buddy Bridge.app`。打开模型控制面板，菜单栏出现分支图标，无终端窗口。关闭窗口后仍在托盘运行。
 2. 首次启动自动准备 OpenCode 1.18.32：优先复制已有同版本运行时，否则从官方 npm 包下载并校验 SHA-512。无需 npm 或管理员权限。
 3. 每次启动先更新 OpenCode 模型目录，根据价格字段筛选免费且支持工具的文本模型，再同步 `~/.workbuddy/models.json`。
 4. 在 WorkBuddy 模型列表选择 `OC · …`。已打开的列表可能需要关闭后重新打开。
@@ -13,7 +13,7 @@ macOS 托盘应用：将本机 OpenCode 包装为 OpenAI Chat Completions 接口
 
 只更新带 `buddyBridgeOwner: buddy-bridge-v1` 的条目；保留已有模型，发生 ID 冲突时保留用户条目。写入前备份原文件为 `models.json.buddy-bridge-时间戳.bak`，使用原子替换；解析错误或扫描结果为空时不覆盖。
 
-菜单模型状态区分“未测试”“最近成功”“最近失败”。发现免费模型不代表其当前额度、服务状态或兼容性已验证。
+主窗口支持搜索、模型详情、单个/全部检测和重新扫描。每次启动自动扫描目录并顺序发送简短请求检测（单个最多 30 秒，会消耗少量免费额度）。状态区分未检测、最近可用、额度不足、限流、访问受限、超时和其他异常，展示原始错误和最近检测时间。失败或额度不足不会删除模型；检测结果跨重启保留。额度只根据明确的上游错误判断，不提供剩余额度数字。检测通过只证明简短对话可用，不代表复杂工具工作流已验证。
 
 ## 执行方式
 
