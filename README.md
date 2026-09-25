@@ -70,3 +70,5 @@ BUDDY_TEST_MODEL=opencode/mimo-v2.6-flash-free node scripts/smoke-workbuddy.mjs
 ```
 
 运行前先等待托盘显示“运行中”。测试只创建一个临时文件，限制工具为 Read/Write；检查真实工具结果和磁盘内容。详见 `docs/validation.md`。
+
+WorkBuddy 使用与名称相同的短模型 ID（如 `OC · MiMo Flash`），避免界面拼接完整上游 ID。代理将短 ID 映射到原始 OpenCode 模型；旧的完整 ID 调用仍受可用性检查。

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 const exec = promisify(execFile);
-const model = process.env.BUDDY_TEST_MODEL || 'opencode/space-bunny-free';
+const model = process.env.BUDDY_TEST_MODEL || 'OC · Space Bunny';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-bridge-'));
 const file = path.join(root, 'verified.txt');
 const cli = process.env.WORKBUDDY_CLI || '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy';

@@ -22,3 +22,5 @@ export function displayName(id, original) {
     'nemotron-3.5-lightning-free': 'Nemotron Lightning',
   }[id] || original;
 }
+
+export function clientModelID(model) { return `OC · ${model.name}`; }

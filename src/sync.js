@@ -1,3 +1,4 @@
+import { clientModelID } from './model-status.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -16,8 +17,8 @@ export function mergeModels(document, models, endpoint, key, { allowEmpty = fals
   if (!Array.isArray(list)) throw new Error('Unrecognized WorkBuddy models.json; left unchanged');
   const kept = list.filter(m => m.buddyBridgeOwner !== OWNER);
   const conflicts = new Set(kept.map(m => m.id));
-  const entries = models.filter(m => !conflicts.has(m.id)).map(m => ({
-    id: m.id, name: `OC · ${m.name}`, vendor: 'Custom', url: endpoint, apiKey: key,
+  const entries = models.filter(m => !conflicts.has(m.id) && !conflicts.has(clientModelID(m))).map(m => ({
+    id: clientModelID(m), name: clientModelID(m), vendor: 'Custom', url: endpoint, apiKey: key,
     supportsToolCall: true, supportsImages: false, supportsReasoning: false,
     buddyBridgeOwner: OWNER,
     ...(m.context ? { maxInputTokens: m.context } : {}),

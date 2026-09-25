@@ -59,7 +59,7 @@ test('sync preserves unowned entries and object metadata, removes owned stale en
     assert.deepEqual(JSON.parse(await fs.readFile(result.backup, 'utf8')), old);
     const merged = JSON.parse(await fs.readFile(file, 'utf8'));
     assert.deepEqual(merged.models[0], user); assert.equal(merged.other, true);
-    assert.deepEqual(merged.availableModels, ['personal', models[0].id]);
+    assert.deepEqual(merged.availableModels, ['personal', 'OC · Test']);
     assert.equal((await syncModels(file, models, 'http://127.0.0.1:41980/v1/chat/completions', 'local-key')).changed, false);
     await assert.rejects(syncModels(file, [], 'x', 'x'), /Empty model/);
     assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), merged);
@@ -107,7 +107,7 @@ test('HTTP authenticates local clients, rejects origins, supports SSE and model 
   try {
     assert.equal((await fetch(base + '/v1/models')).status, 401);
     assert.equal((await fetch(base + '/v1/models', { headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
-    assert.equal((await (await fetch(base + '/v1/models', { headers })).json()).data[0].id, models[0].id);
+    assert.equal((await (await fetch(base + '/v1/models', { headers })).json()).data[0].id, 'OC · Test');
     const response = await fetch(base + '/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ ...body, stream: true }) });
     assert.ok((await response.text()).includes('[DONE]')); assert.equal(selected, body.model);
   } finally { server.closeAllConnections(); server.close(); }
@@ -217,4 +217,17 @@ test('response timings cover completed and failed upstream requests', async () =
     assert.deepEqual(recorded.map(args => args[1]), [true, false]);
     for (const args of recorded) assert.ok(Number.isInteger(args[5]) && args[5] >= 30, 'Includes upstream wait on both outcomes');
   } finally { server.closeAllConnections(); server.close(); }
+});
+
+
+test('short client IDs display once, route to upstream IDs and preserve manual collisions', () => {
+  const entries = mergeModels([], models, 'local', 'key');
+  assert.equal(entries[0].id, 'OC · Test');
+  assert.equal(entries[0].name, entries[0].id);
+  assert.equal(prepare({ ...body, model: entries[0].id }, models).model.id, models[0].id);
+  assert.throws(() => prepare({ ...body, model: entries[0].id }, []), /available free/);
+  const manual = { id: entries[0].id, apiKey: 'mine' };
+  assert.deepEqual(mergeModels([manual], models, 'local', 'key'), [manual]);
+  const legacy = [{ id: models[0].id, buddyBridgeOwner: OWNER }];
+  assert.deepEqual(mergeModels(legacy, models, 'local', 'key'), entries);
 });

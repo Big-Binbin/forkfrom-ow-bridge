@@ -1,3 +1,4 @@
+import { clientModelID } from './model-status.js';
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { prepare, sendSSE, BridgeError } from './protocol.js';
@@ -29,7 +30,7 @@ export function createServer({ key, backend, getModels, refresh, probe, status, 
     let heartbeat, model, started, attempted = false;
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
-      if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: m.id, object: 'model', owned_by: 'opencode', name: m.name })) });
+      if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: clientModelID(m), object: 'model', owned_by: 'opencode', name: clientModelID(m) })) });
       if (req.method === 'POST' && route === '/admin/probe') {
         const body = await readBody(req);
         return json(res, 202, probe(body.model));
@@ -40,6 +41,7 @@ export function createServer({ key, backend, getModels, refresh, probe, status, 
       const body = await readBody(req);
       model = body.model;
       const request = prepare(body, getModels());
+      model = request.model.id;
       if (body.stream) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         res.write(': validating model response before emission\n\n');
@@ -48,8 +50,9 @@ export function createServer({ key, backend, getModels, refresh, probe, status, 
       attempted = true;
       started = performance.now();
       const result = await backend.complete(request, controller.signal);
-      await onResult(body.model, true, undefined, undefined, undefined, Math.round(performance.now() - started));
+      await onResult(model, true, undefined, undefined, undefined, Math.round(performance.now() - started));
       if (controller.signal.aborted) return;
+      result.model = body.model;
       if (body.stream) sendSSE(res, result, body.stream_options?.include_usage);
       else json(res, 200, result);
     } catch (e) {

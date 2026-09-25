@@ -1,3 +1,4 @@
+import { clientModelID } from './model-status.js';
 import { randomUUID } from 'node:crypto';
 
 export class BridgeError extends Error {
@@ -9,7 +10,8 @@ export class BridgeError extends Error {
 export function prepare(body, models) {
   if (!body || !Array.isArray(body.messages) || !body.messages.length)
     throw new BridgeError('messages must be a nonempty array');
-  const model = models.find(m => m.id === body.model);
+  const matches = models.filter(m => m.id === body.model || clientModelID(m) === body.model);
+  const model = matches.length === 1 ? matches[0] : undefined;
   if (!model) throw new BridgeError('Select an available free model from /v1/models', 400, 'model_not_found');
   if (body.n !== undefined && body.n !== 1) throw new BridgeError('Only n=1 is supported');
   const tools = body.tools ?? [];
