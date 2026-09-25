@@ -76,3 +76,5 @@ WorkBuddy 使用与名称相同的短模型 ID（`OC · ` 加 OpenCode 目录原
 模型名称直接读取 OpenCode 目录的 name，缺失时使用原始 ID，不维护固定简称表。
 
 控制面板的“使用系统代理”开关默认关闭，选择保存在应用 settings.json。开启后读取 macOS 的 HTTP/HTTPS 代理，供 OpenCode 目录刷新和模型请求使用；本地连接始终绕过代理。切换会重新读取并检测，不改 WorkBuddy 配置。当前支持静态 HTTP/HTTPS 系统代理；仅 SOCKS 或 PAC 配置会明确报错。关闭表示应用不主动使用系统代理，不能绕过 VPN 的 TUN 接管。
+
+如果结构化输出不兼容，代理会额外检测普通文字对话。成功时标记“可连接 · 仅对话”，不自动导入；模型详情可单独追加导入 WorkBuddy，不覆盖其他条目。此模式不强制 JSON 格式，不转换或执行任何工具调用，配置 supportsToolCall=false；收到工具请求时明确拒绝。正常退出仍清理这些模型。

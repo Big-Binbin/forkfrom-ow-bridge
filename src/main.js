@@ -45,16 +45,18 @@ const logFile = path.join(dataDir, 'opencode.log');
 try { if ((await fs.stat(logFile)).size > 5 * 1024 * 1024) await fs.rename(logFile, logFile + '.previous'); } catch {}
 const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
 const validated = new Set();
-const publishedModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true);
+const manualChatModels = new Set();
+const usableModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true).map(m => ({ ...m, chatOnly: state.modelResults[m.id]?.chatOnly === true }));
+const publishedModels = () => usableModels().filter(m => !m.chatOnly || manualChatModels.has(m.id));
 let syncWrites = Promise.resolve();
 const modelsFile = process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 
-function syncPublished(published = publishedModels()) {
+function syncPublished(published = publishedModels(), options = {}) {
   syncWrites = syncWrites.then(async () => {
     let sync;
     if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
     else {
-      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true }); }
+      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { ...options, allowEmpty: true }); }
       catch (e) { sync = { error: e.message }; }
     }
     update({ sync: { ...sync, time: new Date().toISOString() } });
@@ -62,12 +64,12 @@ function syncPublished(published = publishedModels()) {
   });
   return syncWrites;
 }
-async function record(model, ok, error, status, code, durationMs, source = 'request') {
+async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true) {
   if (stopping) return;
-  const result = { model, ...modelResult(ok, error, status, code), durationMs, source };
+  const result = { model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly };
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
-  update({ availableModels: publishedModels().map(m => m.id) });
+  update({ availableModels: usableModels().filter(m => !m.chatOnly).map(m => m.id) });
 }
 let probing = false, probeTask;
 const probeAbort = new AbortController();
@@ -87,7 +89,18 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         try {
           await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }], tool_choice: 'none' }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
-        } catch (e) { if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe'); }
+        } catch (e) {
+          const formatUnsupported = e.code === 'invalid_model_output' || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
+          if (!stopping && formatUnsupported) {
+            try {
+              const chatModel = { ...model, chatOnly: true };
+              await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
+              await record(model.id, true, '工具转换不兼容：' + e.message, undefined, 'chat_only', Math.round(performance.now() - started), 'probe', true);
+            } catch (chatError) {
+              if (!stopping) await record(model.id, false, chatError.message, chatError.status, chatError.code, Math.round(performance.now() - started), 'probe');
+            }
+          } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe');
+        }
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }
@@ -149,9 +162,12 @@ async function setSystemProxy(enabled) {
   startProbes(undefined, true);
   return { useSystemProxy: enabled };
 }
-async function importModels() {
+async function importModels(modelID) {
   if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
-  const sync = await syncPublished();
+  const chatModel = modelID ? usableModels().find(m => m.id === modelID && m.chatOnly) : null;
+  if (modelID && !chatModel) throw new Error('该模型尚未通过普通对话检测');
+  const sync = await syncPublished(chatModel ? [chatModel] : publishedModels(), chatModel ? { append: true } : {});
+  if (chatModel && !sync.error) manualChatModels.add(chatModel.id);
   if (sync.error) throw new Error(sync.error);
   return sync;
 }

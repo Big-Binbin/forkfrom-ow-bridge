@@ -244,3 +244,29 @@ test('discovery preserves provider names for existing and newly added models', (
   assert.equal(discovered.find(m => m.id.endsWith('/future-model-free')).name, 'Future Model Preview');
   assert.equal(discovered.find(m => m.id.endsWith('/no-name')).name, 'no-name');
 });
+
+test('chat-only models preserve text without structured formatting and reject tool requests', async () => {
+  const chatModels = [{ ...models[0], chatOnly: true }];
+  assert.throws(() => prepare(body, chatModels), /仅支持普通对话/);
+  let sent;
+  const backend = new Backend('http://unused', 'test');
+  backend.request = async (route, method, data) => {
+    if (route === '/session') return { id: 'chat' };
+    if (route === '/permission') return [];
+    if (route.endsWith('/message')) { sent = data; return { info: {}, parts: [{ type: 'text', text: 'Plain answer' }] }; }
+    return true;
+  };
+  const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages }, chatModels));
+  assert.equal(sent.format, undefined);
+  assert.equal(sent.agent, 'buddy-chat');
+  assert.equal(result.choices[0].message.content, 'Plain answer');
+  assert.equal(result.choices[0].message.tool_calls, undefined);
+});
+
+test('individual chat import preserves existing models and disables tools', () => {
+  const existing = { models: [{ id: 'personal' }, { id: 'OC · Other', buddyBridgeOwner: OWNER }], availableModels: ['personal', 'OC · Other'] };
+  const result = mergeModels(existing, [{ ...models[0], chatOnly: true }], 'local', 'key', { append: true });
+  assert.deepEqual(result.models.slice(0, 2), existing.models);
+  assert.equal(result.models[2].supportsToolCall, false);
+  assert.deepEqual(result.availableModels, ['personal', 'OC · Other', 'OC · Test']);
+});

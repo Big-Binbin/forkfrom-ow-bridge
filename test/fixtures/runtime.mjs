@@ -11,6 +11,7 @@ export async function startBackend(_, dataDir) {
     models: async () => (await read()).models,
     complete: async request => {
       await new Promise(resolve => setTimeout(resolve, 250));
+      if ((await read()).chatOnly?.includes(request.model.id) && !request.chatOnly) throw Object.assign(new Error('only auto is supported for tool_choice'), { code: 'model_error' });
       if ((await read()).failed.includes(request.model.id)) throw new Error('insufficient_quota');
       return { model: request.model.id, choices: [{ message: { role: 'assistant', content: 'OK' } }] };
     },

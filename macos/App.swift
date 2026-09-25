@@ -148,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         }
         for model in sorted {
             let id = model["id"] as? String ?? ""
-            let label = checking && pending.contains(id) ? (id == current ? "检测中" : "等待检测") : available.contains(id) ? "可用" : results[id]?["ok"] as? Bool == false ? "不可用" : "待检测"
+            let label = checking && pending.contains(id) ? (id == current ? "检测中" : "等待检测") : available.contains(id) ? "可用" : (results[id]?["ok"] as? Bool == true && results[id]?["chatOnly"] as? Bool == true) ? "可连接 · 仅对话" : results[id]?["ok"] as? Bool == false ? "不可用" : "待检测"
             add(modelsMenu, "OC · \(model["name"] as? String ?? "") · \(label)", nil)
         }
         if models.isEmpty { add(modelsMenu, "暂未读取到模型", nil) }
@@ -169,17 +169,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     @objc func checkAllModels() { probeModel(nil) }
     @objc func refreshModels() { modelAction("refresh") }
     @objc func importModels() { modelAction("import") }
-    func modelAction(_ action: String) {
+    func modelAction(_ action: String, model: String? = nil) {
         guard let key = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8) else { return }
         let endpoint = status["endpoint"] as? String ?? "http://127.0.0.1:41980/v1"
         let base = String(endpoint.dropLast(3))
         guard let url = URL(string: base + "/admin/" + action) else { return }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 150
+        if let model {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model])
+        }
         request.setValue("Bearer \(key.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             DispatchQueue.main.async {
                 if error != nil || (response as? HTTPURLResponse)?.statusCode != 200 {
-                    let alert = NSAlert(); alert.messageText = action == "import" ? "模型导入失败" : "模型读取失败"; alert.informativeText = error?.localizedDescription ?? "请查看日志，原有配置已保留。"; alert.runModal()
+                    let alert = NSAlert(); alert.messageText = action.hasPrefix("import") ? "模型导入失败" : "模型读取失败"; alert.informativeText = error?.localizedDescription ?? "请查看日志，原有配置已保留。"; alert.runModal()
                 }
                 self?.refreshMenu()
             }
@@ -241,7 +245,7 @@ struct Dashboard: View {
         let id = model["id"] as? String ?? ""
         if pending(id) { return 1 }
         if (app.status["availableModels"] as? [String] ?? []).contains(id) { return 0 }
-        return results[id]?["ok"] as? Bool == false ? 2 : 1
+        return results[id]?["ok"] as? Bool == false || results[id]?["chatOnly"] as? Bool == true ? 2 : 1
     }
     var orderedModels: [[String: Any]] {
         models.sorted {
@@ -253,6 +257,7 @@ struct Dashboard: View {
     func label(_ id: String) -> String {
         if pending(id) { return probe["current"] as? String == id ? "检测中" : "等待检测" }
         guard let r = results[id] else { return "未检测" }
+        if r["ok"] as? Bool == true && r["chatOnly"] as? Bool == true { return "可连接 · 仅对话" }
         switch r["category"] as? String {
         case "available": return (app.status["availableModels"] as? [String] ?? []).contains(id) ? "可用" : "待复测"
         case "quota": return "额度不足"
@@ -343,6 +348,10 @@ struct Dashboard: View {
                         HStack {
                             Text(id).font(.system(size: 12, weight: .medium, design: .monospaced)).textSelection(.enabled)
                             Spacer()
+                        }
+                        if results[id]?["ok"] as? Bool == true && results[id]?["chatOnly"] as? Bool == true {
+                            Text("仅普通对话，不执行文件读写等工具操作；不会自动导入。").font(.caption).foregroundColor(.secondary)
+                            Button("单独导入 WorkBuddy（仅对话）") { app.modelAction("import-chat", model: id) }.disabled(!ready || checking)
                         }
                         if let error = results[id]?["error"] as? String { Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).lineLimit(4) }
                         Text("最近更新：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)

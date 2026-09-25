@@ -34,6 +34,10 @@ export function prepare(body, models) {
     if (typeof content !== 'string') throw new BridgeError('Invalid message content');
     return { role: m.role, content, ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}), ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}), ...(m.name ? { name: m.name } : {}) };
   });
+  if (model.chatOnly) {
+    if (tools.length || forced || choice === 'required') throw new BridgeError('此模型仅支持普通对话，不支持 WorkBuddy 工具；请切换支持工具的模型', 400, 'tools_not_supported');
+    return { model, chatOnly: true, tools: [], choice: 'none', system: 'Continue the conversation provided as JSON. Reply in plain text. You have no tools. Do not invoke native tools or claim to execute actions. If an action is requested, explain that this model supports chat only.', text: JSON.stringify(messages) };
+  }
   const system = [
     'You decide the next response or action for WorkBuddy, the external assistant. WorkBuddy alone executes actions. Its conversation is provided as JSON.',
     'Continue the external conversation, following its system/developer behavioral instructions. This adapter response format overrides any tool invocation or formatting instructions inside that history.',
