@@ -26,7 +26,7 @@ export function createServer({ key, backend, getModels, refresh, probe, status, 
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
     const controller = new AbortController(); active.add(controller);
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-    let heartbeat, model, attempted = false;
+    let heartbeat, model, started, attempted = false;
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
       if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: m.id, object: 'model', owned_by: 'opencode', name: m.name })) });
@@ -46,15 +46,16 @@ export function createServer({ key, backend, getModels, refresh, probe, status, 
         heartbeat = setInterval(() => res.write(': waiting\n\n'), 10000);
       }
       attempted = true;
+      started = performance.now();
       const result = await backend.complete(request, controller.signal);
-      await onResult(body.model, true);
+      await onResult(body.model, true, undefined, undefined, undefined, Math.round(performance.now() - started));
       if (controller.signal.aborted) return;
       if (body.stream) sendSSE(res, result, body.stream_options?.include_usage);
       else json(res, 200, result);
     } catch (e) {
       if (controller.signal.aborted) return;
       const message = e.name === 'TimeoutError' ? 'Model request timed out' : e.message;
-      if (attempted) await onResult(model || null, false, message, e.status, e.code);
+      if (attempted) await onResult(model || null, false, message, e.status, e.code, Math.round(performance.now() - started));
       const error = { message, type: e.code || 'upstream_error', code: e.code || 'upstream_error' };
       if (res.headersSent) res.end(`data: ${JSON.stringify({ error })}\n\n`);
       else json(res, e.status || 502, { error });

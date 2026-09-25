@@ -59,8 +59,8 @@ function syncPublished() {
   });
   return syncWrites;
 }
-async function record(model, ok, error, status, code) {
-  const result = { model, ...modelResult(ok, error, status, code) };
+async function record(model, ok, error, status, code, durationMs, source = 'request') {
+  const result = { model, ...modelResult(ok, error, status, code), durationMs, source };
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
   await syncPublished();
@@ -77,10 +77,11 @@ function startProbes(modelID) {
       for (const model of selected) {
         if (stopping) break;
         update({ probe: { running: true, current: model.id } });
+        const started = performance.now();
         try {
           await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }], tool_choice: 'none' }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
-          await record(model.id, true);
-        } catch (e) { if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code); }
+          await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
+        } catch (e) { if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe'); }
       }
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));

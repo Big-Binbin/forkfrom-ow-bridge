@@ -155,6 +155,13 @@ struct Dashboard: View {
     var probe: [String: Any] { app.status["probe"] as? [String: Any] ?? [:] }
     var ready: Bool { app.status["phase"] as? String == "ready" }
     var checking: Bool { probe["running"] as? Bool == true }
+    func responseTime(_ id: String) -> String {
+        guard let result = results[id], let ms = result["durationMs"] as? Double else { return "响应耗时 —" }
+        let source = result["source"] as? String == "probe" ? "检测" : "调用"
+        let outcome = result["ok"] as? Bool == true ? "响应" : "失败"
+        let duration = ms < 1000 ? String(format: "%.0f ms", ms) : String(format: "%.1f 秒", ms / 1000)
+        return "最近\(source) · \(outcome)耗时 \(duration)"
+    }
     func rank(_ model: [String: Any]) -> Int {
         let id = model["id"] as? String ?? ""
         if (app.status["availableModels"] as? [String] ?? []).contains(id) { return 0 }
@@ -235,6 +242,7 @@ struct Dashboard: View {
                                     Image(systemName: "cube.transparent").font(.title2).foregroundColor(accent)
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text("OC · " + (model["name"] as? String ?? id)).font(.system(size: 14, weight: .medium)).foregroundColor(.primary)
+                                        Text(responseTime(id)).font(.caption).monospacedDigit().foregroundColor(.secondary)
                                     }
                                     Spacer()
                                     Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
@@ -251,13 +259,13 @@ struct Dashboard: View {
                             Spacer()
                         }
                         if let error = results[id]?["error"] as? String { Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).lineLimit(4) }
-                        Text("最近检测：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)
+                        Text("最近更新：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)
                     }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
                 }
                 let sync = app.status["sync"] as? [String: Any]
                 Text(sync?["error"] as? String ?? (ready ? "仅检测通过的模型同步到 WorkBuddy · 选择 OC · 开头的模型" : "准备完成后将自动同步到 WorkBuddy"))
                     .font(.caption).foregroundColor(sync?["error"] != nil ? .orange : .secondary)
-                Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(minWidth: 880, minHeight: 620)
     }

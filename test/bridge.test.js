@@ -196,3 +196,25 @@ test('failed models disappear from API and cached callers cannot execute them', 
     assert.equal(models.length, 1, 'UI discovery catalog is retained');
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+test('response timings cover completed and failed upstream requests', async () => {
+  let fail = false;
+  const recorded = [];
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async () => {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      if (fail) throw new Error('timed out');
+      return completion(body.model, { role: 'assistant', content: 'OK' });
+    } },
+    onResult: async (...args) => { recorded.push(args); }, status: () => ({}) });
+  const base = await listen(server);
+  const request = () => fetch(base + '/v1/chat/completions', { method: 'POST',
+    headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await request()).status, 200);
+    fail = true;
+    assert.equal((await request()).status, 502);
+    assert.deepEqual(recorded.map(args => args[1]), [true, false]);
+    for (const args of recorded) assert.ok(Number.isInteger(args[5]) && args[5] >= 30, 'Includes upstream wait on both outcomes');
+  } finally { server.closeAllConnections(); server.close(); }
+});
