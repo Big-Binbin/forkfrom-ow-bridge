@@ -155,6 +155,18 @@ struct Dashboard: View {
     var probe: [String: Any] { app.status["probe"] as? [String: Any] ?? [:] }
     var ready: Bool { app.status["phase"] as? String == "ready" }
     var checking: Bool { probe["running"] as? Bool == true }
+    func rank(_ model: [String: Any]) -> Int {
+        let id = model["id"] as? String ?? ""
+        if (app.status["availableModels"] as? [String] ?? []).contains(id) { return 0 }
+        if checking && probe["current"] as? String == id { return 1 }
+        return results[id]?["ok"] as? Bool == false ? 2 : 1
+    }
+    var orderedModels: [[String: Any]] {
+        models.filter { search.isEmpty || "\($0["name"] ?? "") \($0["id"] ?? "")".localizedCaseInsensitiveContains(search) }.sorted {
+            if rank($0) != rank($1) { return rank($0) < rank($1) }
+            return ($0["name"] as? String ?? "").localizedCaseInsensitiveCompare($1["name"] as? String ?? "") == .orderedAscending
+        }
+    }
     let accent = Color(red: 0.15, green: 0.43, blue: 0.36)
     func label(_ id: String) -> String {
         if checking && probe["current"] as? String == id { return "检测中" }
@@ -197,7 +209,7 @@ struct Dashboard: View {
                         Text("自动发现，保留每一个模型的状态。").foregroundColor(.secondary)
                     }
                     Spacer()
-                    Button("重新扫描", action: app.restart).disabled(checking || !ready)
+                    Button("读取免费模型", action: app.restart).disabled(checking || !ready)
                     Button(checking ? "正在检测…" : "检测全部") { app.probeModel(nil) }.disabled(!ready || checking).buttonStyle(.borderedProminent).tint(accent)
                 }
                 HStack(spacing: 10) {
@@ -210,13 +222,13 @@ struct Dashboard: View {
                 HStack(spacing: 22) {
                     metric("已发现", models.count)
                     metric("最近可用", models.filter { label($0["id"] as? String ?? "") == "最近可用" }.count)
-                    metric("待检测", models.filter { results[$0["id"] as? String ?? ""] == nil }.count)
+                    metric("待检测", models.filter { rank($0) == 1 }.count)
                     Spacer()
                     TextField("搜索名称或模型 ID", text: $search).textFieldStyle(.roundedBorder).frame(width: 210)
                 }
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(models.filter { search.isEmpty || "\($0["name"] ?? "") \($0["id"] ?? "")".localizedCaseInsensitiveContains(search) }, id: \.selfID) { model in
+                        ForEach(orderedModels, id: \.selfID) { model in
                             let id = model["id"] as? String ?? ""
                             Button { selected = id } label: {
                                 HStack(spacing: 14) {
@@ -237,7 +249,6 @@ struct Dashboard: View {
                         HStack {
                             Text(id).font(.system(size: 12, weight: .medium, design: .monospaced)).textSelection(.enabled)
                             Spacer()
-                            Button("检测此模型") { app.probeModel(id) }.disabled(!ready || checking)
                         }
                         if let error = results[id]?["error"] as? String { Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).lineLimit(4) }
                         Text("最近检测：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)
