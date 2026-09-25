@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     var timer: Timer?
     @Published var status: [String: Any] = [:]
     @Published var changingProxy = false
+    @Published var importing = false
     var window: NSWindow?
     var quitting = false
     var waitingForRestart = false
@@ -162,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if [#selector(refreshModels), #selector(checkAllModels), #selector(importModels)].contains(menuItem.action) {
-            return status["phase"] as? String == "ready" && (status["probe"] as? [String: Any])?["running"] as? Bool != true
+            return !importing && status["phase"] as? String == "ready" && (status["probe"] as? [String: Any])?["running"] as? Bool != true
         }
         return true
     }
@@ -170,18 +171,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     @objc func refreshModels() { modelAction("refresh") }
     @objc func importModels() { modelAction("import") }
     func modelAction(_ action: String) {
-        guard let key = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8) else { return }
+        let isImport = action == "import"
+        if isImport && importing { return }
+        guard let key = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8) else {
+            let alert = NSAlert(); alert.messageText = "无法连接本地服务"; alert.informativeText = "无法读取本地 API Key，请重启代理后重试。"; alert.runModal()
+            return
+        }
         let endpoint = status["endpoint"] as? String ?? "http://127.0.0.1:41980/v1"
         let base = String(endpoint.dropLast(3))
         guard let url = URL(string: base + "/admin/" + action) else { return }
+        if isImport { importing = true }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 150
         request.setValue("Bearer \(key.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
-                if error != nil || (response as? HTTPURLResponse)?.statusCode != 200 {
-                    let alert = NSAlert(); alert.messageText = action.hasPrefix("import") ? "模型导入失败" : "模型读取失败"; alert.informativeText = error?.localizedDescription ?? "请查看日志，原有配置已保留。"; alert.runModal()
+                guard let self else { return }
+                if isImport { self.importing = false }
+                let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let failed = error != nil || (response as? HTTPURLResponse)?.statusCode != 200
+                self.refreshMenu()
+                if failed || isImport {
+                    let alert = NSAlert()
+                    if failed {
+                        alert.messageText = isImport ? "模型导入失败" : "模型读取失败"
+                        let detail = (body?["error"] as? [String: Any])?["message"] as? String
+                        alert.informativeText = detail ?? error?.localizedDescription ?? "请查看日志后重试。"
+                    } else if let count = body?["count"] as? Int {
+                        alert.messageText = "导入完成"
+                        alert.informativeText = body?["changed"] as? Bool == false ? "WorkBuddy 配置已是最新，共 \(count) 个模型，无需重复写入。" : "已将 \(count) 个可用模型导入 WorkBuddy。"
+                    } else {
+                        alert.messageText = "无法确认导入结果"
+                        alert.informativeText = "服务返回的导入结果不完整，请查看日志。"
+                    }
+                    NSApp.activate(ignoringOtherApps: true)
+                    if let window = self.window, window.isVisible { alert.beginSheetModal(for: window) }
+                    else { alert.runModal() }
                 }
-                self?.refreshMenu()
             }
         }.resume()
     }
@@ -315,7 +340,12 @@ struct Dashboard: View {
                     metric("可用", models.filter { label($0["id"] as? String ?? "").hasPrefix("可用") }.count)
                     metric("待检测", models.filter { rank($0) == 1 }.count)
                     Spacer()
-                    Button("导入 WorkBuddy", action: app.importModels).disabled(!ready || checking)
+                    Button(action: app.importModels) {
+                        HStack(spacing: 6) {
+                            if app.importing { ProgressView().controlSize(.small) }
+                            Text(app.importing ? "正在导入…" : "导入 WorkBuddy")
+                        }
+                    }.disabled(!ready || checking || app.importing)
                 }
                 ScrollView {
                     LazyVStack(spacing: 8) {
