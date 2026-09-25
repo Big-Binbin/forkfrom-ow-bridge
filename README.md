@@ -9,7 +9,7 @@ macOS 原生窗口与托盘应用：将本机 OpenCode 包装为 OpenAI Chat Com
 3. 每次启动先更新 OpenCode 模型目录，根据价格字段筛选免费且支持工具的文本模型，检测通过后才同步到 `~/.workbuddy/models.json`。
 4. 在 WorkBuddy 模型列表选择 `OC · …`。已打开的列表可能需要关闭后重新打开。
 
-接口：`http://127.0.0.1:41980/v1`。托盘菜单可复制接口和本地 API Key。同步的模型使用完整 `/v1/chat/completions` 地址，无需手填。
+接口：`http://127.0.0.1:41980/v1`。连接地址和 Key 不在应用界面展示，自动同步即可使用。同步的模型使用完整 `/v1/chat/completions` 地址，无需手填。
 
 只更新带 `buddyBridgeOwner: buddy-bridge-v1` 的条目；保留已有模型，发生 ID 冲突时保留用户条目。即使全部不可用，也会清空代理管理的条目（保留用户手动配置）。写入前备份原文件为 `models.json.buddy-bridge-时间戳.bak`，使用原子替换；解析错误或扫描结果为空时不覆盖。
 

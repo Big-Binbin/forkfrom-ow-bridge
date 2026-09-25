@@ -95,8 +95,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         menu.addItem(.separator())
         add(menu, "重新同步模型到 WorkBuddy", #selector(refreshModels))
-        add(menu, "复制接口地址", #selector(copyEndpoint))
-        add(menu, "复制本地 API Key", #selector(copyKey))
         let modelsMenu = NSMenu()
         let results = status["modelResults"] as? [String: [String: Any]] ?? [:]
         for model in status["models"] as? [[String: Any]] ?? [] {
@@ -129,9 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }.resume()
     }
-    func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
-    @objc func copyEndpoint() { copy(status["endpoint"] as? String ?? "http://127.0.0.1:41980/v1") }
-    @objc func copyKey() { if let s = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8) { copy(s) } }
     @objc func openLogs() { NSWorkspace.shared.open(dataURL) }
     @objc func openWorkBuddy() { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/WorkBuddy.app")) }
     @objc func restart() {
@@ -189,12 +184,6 @@ struct Dashboard: View {
                 }
                 Label("模型与服务", systemImage: "square.grid.2x2.fill").font(.headline).foregroundColor(accent)
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading).background(accent.opacity(0.09)).cornerRadius(9)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("连接地址").font(.caption).foregroundColor(.secondary)
-                    Text(app.status["endpoint"] as? String ?? "http://127.0.0.1:41980/v1").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                    Button("复制地址", action: app.copyEndpoint)
-                    Button("复制本地 API Key", action: app.copyKey)
-                }
                 Spacer()
                 Button("打开 WorkBuddy", action: app.openWorkBuddy)
                 Button("日志与状态文件", action: app.openLogs)
@@ -234,7 +223,6 @@ struct Dashboard: View {
                                     Image(systemName: "cube.transparent").font(.title2).foregroundColor(accent)
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text(model["name"] as? String ?? id).font(.system(size: 14, weight: .medium)).foregroundColor(.primary)
-                                        Text(id).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
                                     }
                                     Spacer()
                                     Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
