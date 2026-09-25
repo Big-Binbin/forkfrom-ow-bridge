@@ -1,7 +1,7 @@
 import Cocoa
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMenuItemValidation {
     let dataURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Buddy Bridge")
     var item: NSStatusItem!
     var process: Process?
@@ -94,26 +94,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         item.button?.title = phase == "ready" ? "" : phase == "error" ? "!" : "·"
         item.button?.toolTip = status["message"] as? String ?? "Buddy Bridge"
         let menu = NSMenu()
+        let models = status["models"] as? [[String: Any]] ?? []
+        let available = Set(status["availableModels"] as? [String] ?? [])
+        let probe = status["probe"] as? [String: Any] ?? [:]
+        let checking = probe["running"] as? Bool == true
+        let pending = Set(probe["pending"] as? [String] ?? [])
+        let current = probe["current"] as? String
+        let currentName = models.first { $0["id"] as? String == current }?["name"] as? String
+        let summary = checking ? "正在检测 · \(currentName ?? "即将完成")" : phase == "ready" ? "运行中 · \(available.count) 个可用模型" : status["message"] as? String ?? "正在启动…"
+        add(menu, summary, nil)
         add(menu, "打开控制面板", #selector(showWindow))
-        add(menu, status["message"] as? String ?? "正在启动…", nil)
         menu.addItem(.separator())
+        add(menu, "重新扫描免费模型", #selector(refreshModels))
+        add(menu, checking ? "正在检测模型…" : "检测全部模型", #selector(checkAllModels))
         add(menu, "导入 WorkBuddy", #selector(importModels))
+        if let sync = status["sync"] as? [String: Any], sync["error"] == nil, let count = sync["count"] as? Int {
+            add(menu, "WorkBuddy 已导入 \(count) 个模型", nil)
+        }
         let modelsMenu = NSMenu()
         let results = status["modelResults"] as? [String: [String: Any]] ?? [:]
-        for model in status["models"] as? [[String: Any]] ?? [] {
-            let result = results[model["id"] as? String ?? ""]
-            let label = result == nil ? "未测试" : result?["ok"] as? Bool == true ? "可用" : "不可用"
+        let sorted = models.sorted {
+            let left = available.contains($0["id"] as? String ?? "")
+            let right = available.contains($1["id"] as? String ?? "")
+            if left != right { return left }
+            return ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "")
+        }
+        for model in sorted {
+            let id = model["id"] as? String ?? ""
+            let label = checking && pending.contains(id) ? (id == current ? "检测中" : "等待检测") : available.contains(id) ? "可用" : results[id]?["ok"] as? Bool == false ? "不可用" : "待检测"
             add(modelsMenu, "OC · \(model["name"] as? String ?? "") · \(label)", nil)
         }
-        let modelsItem = NSMenuItem(title: "免费模型列表", action: nil, keyEquivalent: "")
+        if models.isEmpty { add(modelsMenu, "暂未读取到模型", nil) }
+        let modelsItem = NSMenuItem(title: "模型状态（\(available.count)/\(models.count) 可用）", action: nil, keyEquivalent: "")
         modelsItem.submenu = modelsMenu; menu.addItem(modelsItem)
         menu.addItem(.separator())
         add(menu, "打开 WorkBuddy", #selector(openWorkBuddy))
-        add(menu, "查看日志与状态文件", #selector(openLogs))
-        add(menu, "读取免费模型", #selector(refreshModels))
-        add(menu, "退出", #selector(quit))
+        add(menu, "查看日志", #selector(openLogs))
+        menu.addItem(.separator())
+        add(menu, "退出 Buddy Bridge", #selector(quit))
         item.menu = menu
     }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if [#selector(refreshModels), #selector(checkAllModels), #selector(importModels)].contains(menuItem.action) {
+            return status["phase"] as? String == "ready" && (status["probe"] as? [String: Any])?["running"] as? Bool != true
+        }
+        return true
+    }
+    @objc func checkAllModels() { probeModel(nil) }
     @objc func refreshModels() { modelAction("refresh") }
     @objc func importModels() { modelAction("import") }
     func modelAction(_ action: String) {
