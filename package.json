@@ -45,7 +45,7 @@
     },
     "win": {
       "target": "nsis",
-      "signAndEditExecutable": false
+      "signExecutable": false
     },
     "nsis": {
       "oneClick": false,
