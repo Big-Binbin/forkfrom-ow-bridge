@@ -304,6 +304,31 @@ test('reasoning scan preserves variants; import advertises only mapped controls'
   }
 });
 
+test('WorkBuddy fallback effort uses the default mode for fixed-reasoning models', async () => {
+  const backend = new Backend('http://unused', 'test');
+  let sent;
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: 'fixed-reasoning' };
+    if (route.endsWith('/message')) {
+      sent = payload;
+      return { parts: [{ type: 'text', text: 'OK' }] };
+    }
+    return [];
+  };
+  const model = { ...models[0], chatOnly: true, reasoning: true, variants: {} };
+  for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+    for (const field of [{ reasoning_effort: effort }, { reasoning: { effort } }]) {
+      const request = prepare({ model: model.id, messages: body.messages, ...field }, [model]);
+      await backend.complete(request);
+      assert.equal(sent.variant, undefined, 'No unsupported variant is forwarded to OpenCode');
+      assert.equal(prepare({ model: model.id, messages: body.messages, ...field }, [{ ...model, chatOnly: false }]).variant, undefined);
+    }
+  }
+  for (const effort of ['none', 'invalid', {}])
+    assert.throws(() => prepare({ model: model.id, messages: body.messages, reasoning_effort: effort }, [model]), /reasoning effort/);
+  assert.throws(() => prepare({ model: model.id, messages: body.messages, reasoning_effort: 'high' }, [{ ...model, reasoning: false }]), /reasoning effort/);
+});
+
 test('reasoning selection reaches OpenCode for tool and plain chat requests', async () => {
   const backend = new Backend('http://unused', 'test');
   let sent;

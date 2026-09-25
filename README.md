@@ -39,7 +39,7 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 
 图片接受 PNG/JPEG/WebP/GIF 的 base64 data URL，不接受远程图片链接或本地文件路径，整个请求上限 8 MB。图片作为附件转发，不调用 OpenCode 原生读取工具。
 
-推理声明与可调档位分开处理。支持推理但无档位的模型也勾选推理，保持 OpenCode 默认模式，不提供开关或档位；有档位的填写 `supportedEfforts`，默认优先 medium。`reasoning_effort` 或 `reasoning.effort` 映射为 OpenCode variant，不支持的档位返回 400，不转发思考过程文本。
+推理声明与可调档位分开处理。支持推理但无档位的模型也勾选推理，保持 OpenCode 默认模式，不提供开关或档位；有档位的填写 `supportedEfforts`，默认优先 medium。`reasoning_effort` 或 `reasoning.effort` 映射为 OpenCode variant，声明了可调档位的模型遇到不支持的档位时返回 400；支持推理但没有 variants 的模型兼容 WorkBuddy 默认附带的推理档位，使用 OpenCode 默认模式，不转发不存在的档位。不转发思考过程文本。
 
 输入上限优先读取 `limit.input`，缺少时 WorkBuddy 配置回退 `limit.context`；详情仍分别展示上下文与独立输入上限。输出上限读取 `limit.output`。
 

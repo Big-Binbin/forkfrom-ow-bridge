@@ -18,7 +18,10 @@ export function prepare(body, models) {
   const effort = body.reasoning_effort ?? body.reasoning?.effort;
   const efforts = reasoningEfforts(model);
   const variant = typeof effort === 'string' && Object.hasOwn(efforts, effort) ? efforts[effort] : undefined;
-  if (effort !== undefined && (typeof effort !== 'string' || !variant))
+  // WorkBuddy sends high as a fallback even for fixed-reasoning models with no variants.
+  const defaultReasoning = model.reasoning === true && !Object.keys(model.variants ?? {}).length
+    && ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort);
+  if (effort !== undefined && !defaultReasoning && (typeof effort !== 'string' || !variant))
     throw new BridgeError('Requested reasoning effort is not available for this model', 400, 'unsupported_reasoning_effort');
   const tools = body.tools ?? [];
   if (!Array.isArray(tools) || tools.some(t => t.type !== 'function' || !t.function?.name))
