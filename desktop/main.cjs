@@ -130,7 +130,9 @@ else {
       if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('拒绝未知来源');
       try { return { ok: true, result: await action(name, value) }; } catch (error) { return { ok: false, error: error.message }; }
     });
-    tray = new Tray(nativeImage.createFromPath(path.join(__dirname, process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')));
+    const trayIcon = nativeImage.createFromPath(path.join(__dirname, process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png'));
+    if (process.platform === 'darwin') trayIcon.setTemplateImage(true);
+    tray = new Tray(trayIcon);
     tray.on('click', showWindow);
     showWindow(); publish(); await startService();
   }).catch(error => { dialog.showErrorBox('启动失败', error.message); app.quit(); });
