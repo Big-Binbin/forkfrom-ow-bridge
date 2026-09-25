@@ -74,6 +74,10 @@ function syncPublished(published = publishedModels()) {
 async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true) {
   if (stopping) return;
   const result = { model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly };
+  if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated'].includes(code)) {
+    update({ lastRequest: result });
+    return;
+  }
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
   update({ availableModels: usableModels().map(m => m.id) });

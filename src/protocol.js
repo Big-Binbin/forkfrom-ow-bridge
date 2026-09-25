@@ -82,11 +82,29 @@ export function decode(text, request) {
   let value;
   try { value = JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1')); }
   catch { throw new BridgeError('Model did not return a valid bridge response; no tool was executed', 502, 'invalid_model_output'); }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (value.calls !== undefined && value.tool_calls !== undefined)
+      throw new BridgeError('Ambiguous tool call fields', 502, 'invalid_tool_call');
+    if (value.calls === undefined && Array.isArray(value.tool_calls)) {
+      value.calls = value.tool_calls.map(call => call?.type === 'function'
+        ? { name: call.function?.name, arguments: call.function?.arguments } : null);
+    }
+    if (value.content == null && Array.isArray(value.calls) && value.calls.length) value.content = '';
+    if (typeof value.content === 'string' && value.calls == null
+      && Object.keys(value).every(key => ['content', 'calls', 'role'].includes(key))) value.calls = [];
+    if (Array.isArray(value.calls)) for (const call of value.calls) {
+      if (call && typeof call.arguments === 'string') {
+        try { call.arguments = JSON.parse(call.arguments); }
+        catch { throw new BridgeError('Tool arguments are not valid JSON', 502, 'invalid_tool_call'); }
+      }
+    }
+  }
   if (!value || typeof value.content !== 'string' || !Array.isArray(value.calls)) throw new BridgeError('Invalid model response envelope', 502, 'invalid_model_output');
   if ((request.choice === 'none' || !request.tools.length) && value.calls.length) throw new BridgeError('Model violated tool_choice:none', 502, 'invalid_tool_call');
   if ((request.choice === 'required' || request.forced) && !value.calls.length) throw new BridgeError('Model omitted required tool', 502, 'invalid_tool_call');
   if (!request.parallel && value.calls.length > 1) throw new BridgeError('Model returned multiple tools when disabled', 502, 'invalid_tool_call');
   for (const call of value.calls) {
+    if (!call || typeof call !== 'object') throw new BridgeError('Invalid tool call', 502, 'invalid_tool_call');
     const tool = request.tools.find(t => t.function.name === call.name)?.function;
     if (!tool || (request.forced && call.name !== request.forced) || !call.arguments || Array.isArray(call.arguments) || typeof call.arguments !== 'object')
       throw new BridgeError('Invalid or unlisted tool call', 502, 'invalid_tool_call');

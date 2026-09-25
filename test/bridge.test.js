@@ -398,7 +398,7 @@ test('image attachments preserve history mapping in both tool and chat paths', a
 
 test('a malformed response envelope gets one format-only correction before tools are emitted', async () => {
   const request = prepare(body, models);
-  const malformed = { content: null, calls: [{ name: 'write_file', arguments: { path: 'x' } }] };
+  const malformed = { content: 123, calls: [{ name: 'write_file', arguments: { path: 'x' } }] };
   assert.throws(() => decode(JSON.stringify(malformed), request), /Invalid model response envelope/);
   const backend = new Backend('http://unused', 'test');
   const sent = [];
@@ -436,4 +436,31 @@ test('format correction is bounded and never retries unsafe or invalid tool call
     await assert.rejects(backend.complete(prepare(body, models)));
     assert.equal(calls, kind === 'malformed' ? 2 : 1);
   }
+});
+
+
+test('equivalent response formats normalize without inventing tools or arguments', () => {
+  const request = prepare(body, models);
+  const call = { name: 'write_file', arguments: { path: 'x' } };
+  for (const value of [{ content: null, calls: [call] }, { calls: [call] },
+    { content: '', calls: [{ ...call, arguments: JSON.stringify(call.arguments) }] },
+    { role: 'assistant', content: null, tool_calls: [{ type: 'function', function: { ...call, arguments: JSON.stringify(call.arguments) } }] }]) {
+    const result = decode(JSON.stringify(value), request);
+    assert.equal(result.tool_calls[0].function.name, 'write_file');
+    assert.deepEqual(JSON.parse(result.tool_calls[0].function.arguments), { path: 'x' });
+  }
+  for (const value of [{ content: 'hello' }, { content: 'hello', calls: null }])
+    assert.deepEqual(decode(JSON.stringify(value), request), { role: 'assistant', content: 'hello' });
+  for (const value of [{}, { content: '', calls: [], tool_calls: [] }, { content: 'x', name: 'write_file', arguments: {} },
+    { calls: [null] }, { calls: [{ name: 'unknown', arguments: '{}' }] },
+    { calls: [{ name: 'write_file', arguments: '{}' }] }, { calls: [{ name: 'write_file', arguments: 'bad JSON' }] }])
+    assert.throws(() => decode(JSON.stringify(value), request));
+  assert.throws(() => decode(JSON.stringify({ content: null, calls: [call] }), prepare({ ...body, tool_choice: 'none' }, models)), /none/);
+});
+
+test('external execution failures are preserved as tool observations for the agent', () => {
+  const history = [...body.messages, { role: 'assistant', content: null, tool_calls: [{ id: 'call_failed', type: 'function', function: { name: 'write_file', arguments: '{"path":"x"}' } }] },
+    { role: 'tool', tool_call_id: 'call_failed', content: 'Permission denied: cannot write x' }];
+  const request = prepare({ ...body, messages: history }, models);
+  assert.deepEqual(JSON.parse(request.text).at(-1), history.at(-1));
 });
