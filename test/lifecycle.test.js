@@ -70,8 +70,6 @@ test('startup imports once; repeated checks and reads require import; exit remov
     await waitFor(s => s.probe.running);
     await waitFor(s => !s.probe.running && s.modelResults['opencode/b']?.chatOnly);
     await post('import');
-    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')).map(m => m.id), ['personal', 'OC · A'], 'Chat-only is excluded from bulk import');
-    await post('import-chat', { model: 'opencode/b' });
     const imported = JSON.parse(await fs.readFile(config, 'utf8'));
     assert.deepEqual(imported.map(m => m.id), ['personal', 'OC · A', 'OC · B']);
     assert.equal(imported[2].supportsToolCall, false);

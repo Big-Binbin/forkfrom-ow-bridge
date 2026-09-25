@@ -11,12 +11,11 @@ export async function atomicWrite(file, text) {
   finally { await fs.unlink(temp).catch(() => {}); }
 }
 
-export function mergeModels(document, models, endpoint, key, { allowEmpty = false, append = false } = {}) {
+export function mergeModels(document, models, endpoint, key, { allowEmpty = false } = {}) {
   if (!models.length && !allowEmpty) throw new Error('Empty model discovery; existing configuration preserved');
   const list = Array.isArray(document) ? document : document?.models;
   if (!Array.isArray(list)) throw new Error('Unrecognized WorkBuddy models.json; left unchanged');
-  const replacing = new Set(models.map(clientModelID));
-  const kept = list.filter(m => m.buddyBridgeOwner !== OWNER || (append && !replacing.has(m.id)));
+  const kept = list.filter(m => m.buddyBridgeOwner !== OWNER);
   const conflicts = new Set(kept.map(m => m.id));
   const entries = models.filter(m => !conflicts.has(m.id) && !conflicts.has(clientModelID(m))).map(m => ({
     id: clientModelID(m), name: clientModelID(m), vendor: 'Custom', url: endpoint, apiKey: key,

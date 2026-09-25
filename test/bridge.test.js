@@ -263,10 +263,13 @@ test('chat-only models preserve text without structured formatting and reject to
   assert.equal(result.choices[0].message.tool_calls, undefined);
 });
 
-test('individual chat import preserves existing models and disables tools', () => {
-  const existing = { models: [{ id: 'personal' }, { id: 'OC · Other', buddyBridgeOwner: OWNER }], availableModels: ['personal', 'OC · Other'] };
-  const result = mergeModels(existing, [{ ...models[0], chatOnly: true }], 'local', 'key', { append: true });
-  assert.deepEqual(result.models.slice(0, 2), existing.models);
-  assert.equal(result.models[2].supportsToolCall, false);
-  assert.deepEqual(result.availableModels, ['personal', 'OC · Other', 'OC · Test']);
+test('import fills capabilities and token limits from detected model metadata', () => {
+  const result = mergeModels([{ id: 'personal' }], [{ ...models[0], chatOnly: true }], 'local', 'key');
+  assert.equal(result[0].id, 'personal');
+  assert.equal(result[1].supportsToolCall, false);
+  assert.equal(result[1].supportsImages, false);
+  assert.equal(result[1].supportsReasoning, false);
+  assert.equal(result[1].maxInputTokens, 1000);
+  assert.equal(result[1].maxOutputTokens, 500);
+  assert.equal(mergeModels([], models, 'local', 'key')[0].supportsToolCall, true);
 });

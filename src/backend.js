@@ -10,8 +10,8 @@ export function freeModels(providers) {
   return Object.entries(provider.models).filter(([, m]) => {
     const c = m.cost;
     return c && c.input === 0 && c.output === 0 && (c.cache?.read ?? 0) === 0 && (c.cache?.write ?? 0) === 0
-      && m.capabilities?.toolcall === true && m.capabilities?.output?.text !== false && m.status !== 'deprecated';
-  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.context, output: m.limit?.output }))
+      && m.capabilities?.output?.text !== false && m.status !== 'deprecated';
+  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.input ?? m.limit?.context, output: m.limit?.output, toolcall: m.capabilities?.toolcall === true }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -31,7 +31,7 @@ export class Backend {
   }
   async models() {
     const result = freeModels(await this.request('/provider'));
-    if (!result.length) throw new Error('No free tool-capable models found; existing list preserved');
+    if (!result.length) throw new Error('No free text models found; existing list preserved');
     return result;
   }
   async complete(request, signal) {

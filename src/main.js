@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
-import { prepare } from './protocol.js';
+import { prepare, BridgeError } from './protocol.js';
 import { modelResult } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
@@ -45,18 +45,17 @@ const logFile = path.join(dataDir, 'opencode.log');
 try { if ((await fs.stat(logFile)).size > 5 * 1024 * 1024) await fs.rename(logFile, logFile + '.previous'); } catch {}
 const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
 const validated = new Set();
-const manualChatModels = new Set();
 const usableModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true).map(m => ({ ...m, chatOnly: state.modelResults[m.id]?.chatOnly === true }));
-const publishedModels = () => usableModels().filter(m => !m.chatOnly || manualChatModels.has(m.id));
+const publishedModels = usableModels;
 let syncWrites = Promise.resolve();
 const modelsFile = process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 
-function syncPublished(published = publishedModels(), options = {}) {
+function syncPublished(published = publishedModels()) {
   syncWrites = syncWrites.then(async () => {
     let sync;
     if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
     else {
-      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { ...options, allowEmpty: true }); }
+      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true }); }
       catch (e) { sync = { error: e.message }; }
     }
     update({ sync: { ...sync, time: new Date().toISOString() } });
@@ -69,7 +68,7 @@ async function record(model, ok, error, status, code, durationMs, source = 'requ
   const result = { model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly };
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
-  update({ availableModels: usableModels().filter(m => !m.chatOnly).map(m => m.id) });
+  update({ availableModels: usableModels().map(m => m.id) });
 }
 let probing = false, probeTask;
 const probeAbort = new AbortController();
@@ -87,10 +86,16 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
         try {
-          await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }], tool_choice: 'none' }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
+          if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
+          const token = randomBytes(8).toString('hex');
+          const tools = [{ type: 'function', function: { name: 'bridge_probe', description: 'Return the supplied token. This is a capability test with no side effects.', parameters: { type: 'object', properties: { token: { type: 'string', const: token } }, required: ['token'], additionalProperties: false } } }];
+          const response = await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: `Call bridge_probe with token ${token}.` }], tools, tool_choice: 'required', parallel_tool_calls: false }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
+          const calls = response.choices?.[0]?.message?.tool_calls;
+          if (calls?.length !== 1 || calls[0].function?.name !== 'bridge_probe' || JSON.parse(calls[0].function.arguments).token !== token)
+            throw new BridgeError('Tool capability check failed', 502, 'invalid_tool_call');
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
         } catch (e) {
-          const formatUnsupported = e.code === 'invalid_model_output' || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
+          const formatUnsupported = ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity'].includes(e.code) || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
           if (!stopping && formatUnsupported) {
             try {
               const chatModel = { ...model, chatOnly: true };
@@ -162,12 +167,9 @@ async function setSystemProxy(enabled) {
   startProbes(undefined, true);
   return { useSystemProxy: enabled };
 }
-async function importModels(modelID) {
+async function importModels() {
   if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
-  const chatModel = modelID ? usableModels().find(m => m.id === modelID && m.chatOnly) : null;
-  if (modelID && !chatModel) throw new Error('该模型尚未通过普通对话检测');
-  const sync = await syncPublished(chatModel ? [chatModel] : publishedModels(), chatModel ? { append: true } : {});
-  if (chatModel && !sync.error) manualChatModels.add(chatModel.id);
+  const sync = await syncPublished();
   if (sync.error) throw new Error(sync.error);
   return sync;
 }

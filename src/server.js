@@ -36,7 +36,6 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
         return json(res, 202, probe(body.model));
       }
       if (req.method === 'POST' && route === '/admin/system-proxy') return json(res, 200, await setSystemProxy((await readBody(req)).enabled));
-      if (req.method === 'POST' && route === '/admin/import-chat') return json(res, 200, await importModels((await readBody(req)).model));
       if (req.method === 'POST' && route === '/admin/import') return json(res, 200, await importModels());
       if (req.method === 'POST' && route === '/admin/refresh') return json(res, 200, await refresh());
       if (req.method !== 'POST' || route !== '/v1/chat/completions') return json(res, 404, { error: { message: 'Not found' } });
