@@ -52,14 +52,15 @@ export const isolatedConfig = {
     permission: nativePermissions } },
 };
 
-export async function startBackend(binary, dataDir, logStream) {
+export async function startBackend(binary, dataDir, logStream, proxyEnv = {}) {
   const root = path.join(dataDir, 'opencode');
   for (const d of ['config', 'data', 'cache', 'state', 'project']) await fs.mkdir(path.join(root, d), { recursive: true, mode: 0o700 });
   // Preserve only normal OS/network settings, never other providers' keys or OpenCode auth overrides.
   const env = {};
-  for (const k of ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'SHELL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'])
+  for (const k of ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'SHELL', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'])
     if (process.env[k]) env[k] = process.env[k];
   for (const name of ['config', 'data', 'cache', 'state']) env[`XDG_${name.toUpperCase()}_HOME`] = path.join(root, name);
+  Object.assign(env, proxyEnv);
   const password = randomBytes(24).toString('hex');
   Object.assign(env, { OPENCODE_SERVER_PASSWORD: password, OPENCODE_SERVER_USERNAME: 'opencode',
     OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true',

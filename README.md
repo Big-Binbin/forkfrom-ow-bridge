@@ -74,3 +74,5 @@ BUDDY_TEST_MODEL=opencode/mimo-v2.6-flash-free node scripts/smoke-workbuddy.mjs
 WorkBuddy 使用与名称相同的短模型 ID（`OC · ` 加 OpenCode 目录原名），避免界面拼接完整上游 ID。代理将短 ID 映射到原始 OpenCode 模型；旧的完整 ID 调用仍受可用性检查。
 
 模型名称直接读取 OpenCode 目录的 name，缺失时使用原始 ID，不维护固定简称表。
+
+控制面板的“使用系统代理”开关默认关闭，选择保存在应用 settings.json。开启后读取 macOS 的 HTTP/HTTPS 代理，供 OpenCode 目录刷新和模型请求使用；本地连接始终绕过代理。切换会重新读取并检测，不改 WorkBuddy 配置。当前支持静态 HTTP/HTTPS 系统代理；仅 SOCKS 或 PAC 配置会明确报错。关闭表示应用不主动使用系统代理，不能绕过 VPN 的 TUN 接管。

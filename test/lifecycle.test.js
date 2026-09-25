@@ -45,8 +45,8 @@ test('startup imports once; repeated checks and reads require import; exit remov
     assert.equal(await backups(), 2, 'One startup cleanup and one import after the full batch');
     assert.deepEqual(JSON.parse(initial).map(m => m.id), ['personal', 'OC · A', 'OC · B']);
     const key = (await fs.readFile(path.join(root, 'api-key'), 'utf8')).trim();
-    async function post(route) {
-      const response = await fetch(`http://127.0.0.1:${port}/admin/${route}`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: '{}' });
+    async function post(route, payload = {}) {
+      const response = await fetch(`http://127.0.0.1:${port}/admin/${route}`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       assert.ok(response.ok, await response.text());
     }
     catalog.failed = ['opencode/b']; await writeCatalog();
@@ -57,6 +57,11 @@ test('startup imports once; repeated checks and reads require import; exit remov
     await waitFor(s => s.probe.running);
     await waitFor(s => s.phase === 'ready' && !s.probe.running && s.models.length === 2);
     assert.equal(await fs.readFile(config, 'utf8'), initial, 'Manual reading never writes WorkBuddy');
+    await post('system-proxy', { enabled: false });
+    await waitFor(s => s.probe.running);
+    await waitFor(s => s.phase === 'ready' && !s.probe.running);
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, 'settings.json'), 'utf8')).useSystemProxy, false);
+    assert.equal(await fs.readFile(config, 'utf8'), initial, 'Network mode changes do not import models');
     assert.equal(await backups(), 2, 'Repeated checks and reads produce no config writes');
     await post('import');
     assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')).map(m => m.id), ['personal', 'OC · A']);

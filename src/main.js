@@ -5,6 +5,7 @@ import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
+import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare } from './protocol.js';
 import { modelResult } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
@@ -25,11 +26,14 @@ const tokenFile = path.join(dataDir, 'api-key');
 let key;
 try { key = (await fs.readFile(tokenFile, 'utf8')).trim(); }
 catch (e) { if (e.code !== 'ENOENT') throw e; key = randomBytes(32).toString('hex'); await fs.writeFile(tokenFile, key, { flag: 'wx', mode: 0o600 }); }
+const settingsFile = path.join(dataDir, 'settings.json');
+let settings = {};
+try { settings = JSON.parse(await fs.readFile(settingsFile, 'utf8')); } catch {}
 const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, binary, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
+let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -102,20 +106,22 @@ function watchRuntime(current) {
   });
 }
 
-async function refresh(restartRuntime = false) {
+async function refresh(restartRuntime = false, useSystemProxy = state.useSystemProxy) {
   if (refreshing) return refreshing;
   if (probing || stopping) throw new Error('请等待检测完成');
+  const proxyEnv = await systemProxyEnvironment(useSystemProxy);
   validated.clear();
   models = [];
   update({ phase: 'reading', message: '正在读取免费模型…', models: [], availableModels: [] });
   refreshing = (async () => {
     if (restartRuntime) {
-      const next = await startBackend(binary, dataDir, log);
+      const next = await startBackend(binary, dataDir, log, proxyEnv);
       if (stopping) { await next.stop(); return; }
       const old = runtime;
       runtime = next;
       watchRuntime(next);
-      await old.stop();
+      await old?.stop();
+      update({ useSystemProxy });
     }
     const discovered = await runtime.backend.models();
     if (stopping) return;
@@ -132,6 +138,16 @@ async function readModels() {
   const result = await refresh(true);
   if (!stopping) startProbes(undefined, true);
   return result;
+}
+async function setSystemProxy(enabled) {
+  if (typeof enabled !== 'boolean') throw new Error('代理开关必须是布尔值');
+  if (refreshing || probing || stopping) throw new Error('请等待读取和检测完成');
+  await refresh(true, enabled);
+  if (stopping) return;
+  settings = { ...settings, useSystemProxy: enabled };
+  await atomicWrite(settingsFile, JSON.stringify(settings));
+  startProbes(undefined, true);
+  return { useSystemProxy: enabled };
 }
 async function importModels() {
   if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
@@ -162,16 +178,16 @@ try {
   update({ phase: 'starting' });
   await syncPublished([]);
   binary = await findRuntime(dataDir, message => update({ message }));
+  server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
+    status: () => state, probe: startProbes, onResult: record });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });
-  runtime = await startBackend(binary, dataDir, log);
+  runtime = await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy));
   watchRuntime(runtime);
   // Confirm this runtime has the dedicated agent, not a user's build agent.
   const agents = await runtime.backend.request('/agent');
   if (!agents.some(a => a.name === 'buddy-bridge')) throw new Error('Dedicated approval-gated agent missing');
-  server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels,
-    status: () => state, probe: startProbes, onResult: record });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   await refresh();
   startProbes(undefined, true, true);
   console.log(`Buddy Bridge ready at ${endpoint}; ${models.length} free models`);
-} catch (e) { update({ phase: 'error', message: e.message }); await shutdown(1); }
+} catch (e) { update({ phase: 'error', message: e.message }); if (!server?.listening) await shutdown(1); }

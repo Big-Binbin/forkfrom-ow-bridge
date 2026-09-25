@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     var process: Process?
     var timer: Timer?
     @Published var status: [String: Any] = [:]
+    @Published var changingProxy = false
     var window: NSWindow?
     var quitting = false
     var waitingForRestart = false
@@ -53,6 +54,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
                     let alert = NSAlert(); alert.messageText = "暂时无法检测"; alert.informativeText = error?.localizedDescription ?? "请等待服务启动后重试。"; alert.runModal()
                 }
                 self?.refreshMenu()
+            }
+        }.resume()
+    }
+    func setSystemProxy(_ enabled: Bool) {
+        guard !changingProxy,
+              let key = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8),
+              let endpoint = status["endpoint"] as? String,
+              let url = URL(string: String(endpoint.dropLast(3)) + "/admin/system-proxy") else { return }
+        changingProxy = true
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"; request.timeoutInterval = 150
+        request.setValue("Bearer \(key.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.changingProxy = false
+                if error != nil || (response as? HTTPURLResponse)?.statusCode != 200 {
+                    let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                    let detail = (body?["error"] as? [String: Any])?["message"] as? String
+                    let alert = NSAlert(); alert.messageText = "无法切换系统代理"
+                    alert.informativeText = detail ?? error?.localizedDescription ?? "请检查系统代理配置。"
+                    alert.runModal()
+                }
+                self.refreshMenu()
             }
         }.resume()
     }
@@ -240,6 +267,10 @@ struct Dashboard: View {
                 Label("模型与服务", systemImage: "square.grid.2x2.fill").font(.headline).foregroundColor(accent)
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading).background(accent.opacity(0.09)).cornerRadius(9)
                 Spacer()
+                Toggle("使用系统代理", isOn: Binding(get: { app.status["useSystemProxy"] as? Bool ?? false }, set: { app.setSystemProxy($0) }))
+                    .toggleStyle(.switch).disabled(app.changingProxy || checking || (!ready && app.status["phase"] as? String != "error"))
+                Text(app.changingProxy ? "正在切换连接…" : app.status["useSystemProxy"] as? Bool == true ? "模型请求使用 macOS 系统代理" : "模型请求不使用系统代理")
+                    .font(.caption).foregroundColor(.secondary)
                 Button("日志与状态文件", action: app.openLogs)
                 Text("关闭窗口后，代理仍在托盘运行。\n退出请使用托盘菜单。").font(.caption).foregroundColor(.secondary).lineSpacing(4)
             }.padding(24).frame(width: 205).frame(maxHeight: .infinity).background(Color(nsColor: .controlBackgroundColor))
