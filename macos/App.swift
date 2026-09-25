@@ -332,7 +332,15 @@ struct Dashboard: View {
                                         Text(responseTime(id)).font(.caption).monospacedDigit().foregroundColor(.secondary)
                                     }
                                     Spacer()
-                                    Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
+                                    HStack(spacing: 6) {
+                                        if model["reasoning"] as? Bool == true {
+                                            Text("推理").font(.caption).foregroundColor(.purple).padding(.horizontal, 9).padding(.vertical, 5).background(Color.purple.opacity(0.1)).cornerRadius(6)
+                                        }
+                                        if model["images"] as? Bool == true {
+                                            Text("图片").font(.caption).foregroundColor(.blue).padding(.horizontal, 9).padding(.vertical, 5).background(Color.blue.opacity(0.1)).cornerRadius(6)
+                                        }
+                                        Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
+                                    }.fixedSize(horizontal: true, vertical: false)
                                 }.padding(13).background(selected == id ? accent.opacity(0.08) : Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
                             }.buttonStyle(.plain).detailHitArea("row:" + id)
                         }
