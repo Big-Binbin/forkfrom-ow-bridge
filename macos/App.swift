@@ -100,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         for model in status["models"] as? [[String: Any]] ?? [] {
             let result = results[model["id"] as? String ?? ""]
             let label = result == nil ? "未测试" : result?["ok"] as? Bool == true ? "最近成功" : "最近失败"
-            add(modelsMenu, "\(model["name"] as? String ?? "") · \(label)", nil)
+            add(modelsMenu, "OC · \(model["name"] as? String ?? "") · \(label)", nil)
         }
         let modelsItem = NSMenuItem(title: "免费模型列表", action: nil, keyEquivalent: "")
         modelsItem.submenu = modelsMenu; menu.addItem(modelsItem)
@@ -222,7 +222,7 @@ struct Dashboard: View {
                                 HStack(spacing: 14) {
                                     Image(systemName: "cube.transparent").font(.title2).foregroundColor(accent)
                                     VStack(alignment: .leading, spacing: 5) {
-                                        Text(model["name"] as? String ?? id).font(.system(size: 14, weight: .medium)).foregroundColor(.primary)
+                                        Text("OC · " + (model["name"] as? String ?? id)).font(.system(size: 14, weight: .medium)).foregroundColor(.primary)
                                     }
                                     Spacer()
                                     Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
