@@ -108,7 +108,6 @@ export function decode(text, request) {
     const tool = request.tools.find(t => t.function.name === call.name)?.function;
     if (!tool || (request.forced && call.name !== request.forced) || !call.arguments || Array.isArray(call.arguments) || typeof call.arguments !== 'object')
       throw new BridgeError('Invalid or unlisted tool call', 502, 'invalid_tool_call');
-    for (const key of tool.parameters?.required ?? []) if (!(key in call.arguments)) throw new BridgeError(`Tool ${call.name} omitted required argument ${key}`, 502, 'invalid_tool_call');
   }
   return {
     role: 'assistant', content: value.content || (value.calls.length ? null : ''),

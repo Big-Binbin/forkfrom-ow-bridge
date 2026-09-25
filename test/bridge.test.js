@@ -25,7 +25,7 @@ test('tool calls validated; none, forced and required are enforced', () => {
   assert.throws(() => decode(call, prepare({ ...body, tool_choice: 'none' }, models)), /none/);
   assert.throws(() => decode('{"content":"done","calls":[]}', prepare({ ...body, tool_choice: 'required' }, models)), /required/);
   assert.throws(() => decode(call.replace('write_file', 'bash'), prepare(body, models)), /unlisted/);
-  assert.throws(() => decode(call.replace('{"path":"x"}', '{}'), prepare(body, models)), /required argument/);
+  assert.equal(decode(call.replace('{"path":"x"}', '{}'), prepare(body, models)).tool_calls[0].function.arguments, '{}');
   assert.throws(() => prepare({ ...body, model: 'opencode/paid' }, models), /available free/);
   assert.throws(() => decode('not JSON', prepare(body, models)), /valid bridge/);
 });
@@ -453,7 +453,7 @@ test('equivalent response formats normalize without inventing tools or arguments
     assert.deepEqual(decode(JSON.stringify(value), request), { role: 'assistant', content: 'hello' });
   for (const value of [{}, { content: '', calls: [], tool_calls: [] }, { content: 'x', name: 'write_file', arguments: {} },
     { calls: [null] }, { calls: [{ name: 'unknown', arguments: '{}' }] },
-    { calls: [{ name: 'write_file', arguments: '{}' }] }, { calls: [{ name: 'write_file', arguments: 'bad JSON' }] }])
+    { calls: [{ name: 'write_file', arguments: 'bad JSON' }] }])
     assert.throws(() => decode(JSON.stringify(value), request));
   assert.throws(() => decode(JSON.stringify({ content: null, calls: [call] }), prepare({ ...body, tool_choice: 'none' }, models)), /none/);
 });
@@ -501,4 +501,20 @@ test('model generation outlives control-request deadlines and stops when WorkBud
     assert.ok(events.includes('POST /session/long/abort'));
     assert.ok(events.includes('DELETE /session/long'));
   } finally { server.closeAllConnections(); server.close(); fake.closeAllConnections(); fake.close(); }
+});
+
+
+test('missing Write arguments reach WorkBuddy and its validation error returns to the model', () => {
+  const writeBody = { ...body, tools: [{ type: 'function', function: { name: 'Write', parameters: {
+    type: 'object', properties: { file_path: { type: 'string' }, content: { type: 'string' } }, required: ['file_path', 'content'],
+  } } }] };
+  for (const args of [{ content: 'hello' }, {}]) {
+    const assistant = decode(JSON.stringify({ content: '', calls: [{ name: 'Write', arguments: args }] }), prepare(writeBody, models));
+    assert.deepEqual(JSON.parse(assistant.tool_calls[0].function.arguments), args);
+    const error = { role: 'tool', tool_call_id: assistant.tool_calls[0].id, content: 'Write error: Invalid parameters provided. Reason: file_path is required' };
+    const next = prepare({ ...writeBody, messages: [...body.messages, assistant, error] }, models);
+    assert.deepEqual(JSON.parse(next.text).slice(-2), [{ ...assistant, content: '' }, error]);
+    const corrected = decode(JSON.stringify({ content: '', calls: [{ name: 'Write', arguments: { file_path: 'out.txt', content: 'hello' } }] }), next);
+    assert.equal(JSON.parse(corrected.tool_calls[0].function.arguments).file_path, 'out.txt');
+  }
 });
