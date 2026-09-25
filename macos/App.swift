@@ -156,7 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         let modelsItem = NSMenuItem(title: "模型状态（\(available.count)/\(models.count) 可用）", action: nil, keyEquivalent: "")
         modelsItem.submenu = modelsMenu; menu.addItem(modelsItem)
         menu.addItem(.separator())
-        add(menu, "查看日志", #selector(openLogs))
         menu.addItem(.separator())
         add(menu, "退出 Buddy Bridge", #selector(quit))
         item.menu = menu
@@ -195,13 +194,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
                     if failed {
                         alert.messageText = isImport ? "模型导入失败" : "模型读取失败"
                         let detail = (body?["error"] as? [String: Any])?["message"] as? String
-                        alert.informativeText = detail ?? error?.localizedDescription ?? "请查看日志后重试。"
+                        alert.informativeText = detail ?? error?.localizedDescription ?? "请稍后重试。"
                     } else if let count = body?["count"] as? Int {
                         alert.messageText = "导入完成"
                         alert.informativeText = body?["changed"] as? Bool == false ? "WorkBuddy 配置已是最新，共 \(count) 个模型，无需重复写入。" : "已将 \(count) 个可用模型导入 WorkBuddy。"
                     } else {
                         alert.messageText = "无法确认导入结果"
-                        alert.informativeText = "服务返回的导入结果不完整，请查看日志。"
+                        alert.informativeText = "服务返回的导入结果不完整，请重试。"
                     }
                     NSApp.activate(ignoringOtherApps: true)
                     if let window = self.window, window.isVisible { alert.beginSheetModal(for: window) }
@@ -210,7 +209,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
             }
         }.resume()
     }
-    @objc func openLogs() { NSWorkspace.shared.open(dataURL) }
     @objc func restart() {
         waitingForRestart = true
         previousPID = process.map { Int($0.processIdentifier) }
@@ -309,8 +307,9 @@ struct Dashboard: View {
                     .toggleStyle(.switch).disabled(app.changingProxy || checking || (!ready && app.status["phase"] as? String != "error"))
                 Text(app.changingProxy ? "正在切换连接…" : app.status["useSystemProxy"] as? Bool == true ? "模型请求使用 macOS 系统代理" : "模型请求不使用系统代理")
                     .font(.caption).foregroundColor(.secondary)
-                Button("日志与状态文件", action: app.openLogs)
                 Text("关闭窗口后，代理仍在托盘运行。\n退出请使用托盘菜单。").font(.caption).foregroundColor(.secondary).lineSpacing(4)
+                Text("使用问题在抖音/视频号\n@娄老师说的对")
+                    .font(.caption).foregroundColor(.secondary).lineSpacing(4).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }.padding(24).frame(width: 205).frame(maxHeight: .infinity).background(Color(nsColor: .controlBackgroundColor))
             Divider()
             VStack(alignment: .leading, spacing: 18) {
