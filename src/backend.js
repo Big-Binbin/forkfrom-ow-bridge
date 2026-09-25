@@ -2,7 +2,7 @@ import { BridgeError, decode, completion } from './protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Keep official approval gates active. No native operation is ever approved.
-export const nativePermissions = { '*': 'ask', question: 'deny', task: 'deny', plan_enter: 'deny', plan_exit: 'deny', todowrite: 'deny' };
+export const nativePermissions = { '*': 'ask', question: 'deny', websearch: 'deny', codesearch: 'deny', webfetch: 'deny', task: 'deny', plan_enter: 'deny', plan_exit: 'deny', todowrite: 'deny' };
 
 export function freeModels(providers) {
   const provider = providers.all?.find(p => p.id === 'opencode');
