@@ -1,4 +1,5 @@
 import { BridgeError, decode, completion } from './protocol.js';
+import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Keep official approval gates active. No native operation is ever approved.
@@ -16,26 +17,40 @@ export function freeModels(providers) {
 }
 
 export class Backend {
-  constructor(base, password, timeout = 180000) {
+  constructor(base, password, timeout) {
     Object.assign(this, { base, password, timeout });
   }
   async request(route, method = 'GET', body, signal, timeout = this.timeout) {
-    const response = await fetch(this.base + route, {
-      method, headers: { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]),
+    const requestSignal = timeout == null ? signal : AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]);
+    return new Promise((resolve, reject) => {
+      // Local inference has no proxy-owned deadline or HTTP client's implicit response timeout.
+      const req = httpRequest(this.base + route, {
+        method, signal: requestSignal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` },
+      }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('error', reject);
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString();
+          if (response.statusCode < 200 || response.statusCode >= 300)
+            return reject(new BridgeError(`OpenCode HTTP ${response.statusCode}: ${text.slice(0, 600)}`, response.statusCode >= 500 ? 502 : response.statusCode, 'upstream_error'));
+          try { resolve(JSON.parse(text)); }
+          catch { reject(new BridgeError('OpenCode returned non-JSON response', 502, 'upstream_error')); }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(0);
+      req.end(body !== undefined ? JSON.stringify(body) : undefined);
     });
-    const text = await response.text();
-    if (!response.ok) throw new BridgeError(`OpenCode HTTP ${response.status}: ${text.slice(0, 600)}`, response.status >= 500 ? 502 : response.status, 'upstream_error');
-    try { return JSON.parse(text); } catch { throw new BridgeError('OpenCode returned non-JSON response', 502, 'upstream_error'); }
   }
+
   async models() {
     const result = freeModels(await this.request('/provider'));
     if (!result.length) throw new Error('No free text models found; existing list preserved');
     return result;
   }
   async complete(request, signal) {
-    signal = AbortSignal.any([AbortSignal.timeout(this.timeout), ...(signal ? [signal] : [])]);
     // Native tools require approval; the bridge aborts any attempted native action.
     const session = await this.request('/session', 'POST', { title: 'Buddy Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
@@ -78,7 +93,7 @@ export class Backend {
         parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
       };
       for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal)]);
+        const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
         if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
           const error = response.info.error;
           throw new BridgeError(error.data?.message || error.message || error.name || 'Model request failed', error.data?.statusCode || 502, 'model_error');
@@ -90,7 +105,7 @@ export class Backend {
         let message;
         try { message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request); }
         catch (error) {
-          if (attempt || request.chatOnly || error.code !== 'invalid_model_output' || signal.aborted) throw error;
+          if (attempt || request.chatOnly || error.code !== 'invalid_model_output' || signal?.aborted) throw error;
           payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
           continue;
         }

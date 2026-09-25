@@ -464,3 +464,41 @@ test('external execution failures are preserved as tool observations for the age
   const request = prepare({ ...body, messages: history }, models);
   assert.deepEqual(JSON.parse(request.text).at(-1), history.at(-1));
 });
+
+test('model generation outlives control-request deadlines and stops when WorkBuddy disconnects', async () => {
+  const events = [];
+  let hang = false, markStarted, markDeleted;
+  const fake = http.createServer(async (req, res) => {
+    for await (const chunk of req) {}
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/permission') return res.end('[]');
+    if (req.url === '/session') return res.end('{"id":"long"}');
+    if (req.url.endsWith('/message')) {
+      markStarted?.();
+      if (hang) return;
+      await new Promise(resolve => setTimeout(resolve, 160));
+      return res.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}');
+    }
+    res.end('true');
+    if (req.method === 'DELETE') markDeleted?.();
+  });
+  const backend = new Backend(await listen(fake), 'test', 50);
+  const server = createServer({ key: 'test', backend, getModels: () => models, status: () => ({}) });
+  const base = await listen(server);
+  try {
+    assert.equal((await backend.complete(prepare({ model: models[0].id, messages: body.messages }, models))).choices[0].message.content, 'OK');
+    hang = true; events.length = 0;
+    const started = new Promise(resolve => { markStarted = resolve; });
+    const deleted = new Promise(resolve => { markDeleted = resolve; });
+    const controller = new AbortController();
+    const response = await fetch(base + '/v1/chat/completions', { method: 'POST', signal: controller.signal,
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, stream: true }) });
+    await started;
+    controller.abort();
+    await response.body.cancel().catch(() => {});
+    await Promise.race([deleted, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('Cancellation did not stop OpenCode')), 1500); timer.unref(); })]);
+    assert.ok(events.includes('POST /session/long/abort'));
+    assert.ok(events.includes('DELETE /session/long'));
+  } finally { server.closeAllConnections(); server.close(); fake.closeAllConnections(); fake.close(); }
+});
