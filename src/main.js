@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { resolveModelsFile, validateModelsFile } from './workbuddy-config.js';
 import { dataDirectory } from './platform.js';
 import { randomBytes } from 'node:crypto';
@@ -49,7 +50,9 @@ const validated = new Set();
 const usableModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true).map(m => ({ ...m, chatOnly: state.modelResults[m.id]?.chatOnly === true }));
 const publishedModels = usableModels;
 let syncWrites = Promise.resolve();
-let modelsFile = await resolveModelsFile({ saved: settings.workBuddyModelsFile });
+let modelsFile = process.platform === 'win32'
+  ? await resolveModelsFile({ saved: settings.workBuddyModelsFile })
+  : process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 update({ modelsFile });
 
 function syncPublished(published = publishedModels()) {
@@ -59,7 +62,7 @@ function syncPublished(published = publishedModels()) {
     else {
       try {
         if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请点击导入并选择 models.json；首次使用请先在 WorkBuddy 保存一个自定义模型。');
-        sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true, requireExisting: true });
+        sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true, requireExisting: process.platform === 'win32' });
       }
       catch (e) { sync = { error: e.message }; }
     }

@@ -42,7 +42,7 @@ function publish() {
     { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
     { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
-    { label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') },
+    ...(process.platform === 'win32' ? [{ label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
     { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
     { type: 'separator' }, { label: '退出 Buddy Bridge', click: () => app.quit() },
   ]));
@@ -66,7 +66,7 @@ async function action(name, value) {
   actionBusy = name; publish();
   try {
     let modelsFile;
-    if (name === 'choose-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile()))) {
+    if (process.platform === 'win32' && (name === 'choose-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
       const selection = await dialog.showOpenDialog({ title: '选择 WorkBuddy 的 models.json', message: '请选择 WorkBuddy 实际使用的配置文件。首次使用请先在 WorkBuddy 保存一个自定义模型。', properties: ['openFile'], filters: [{ name: 'JSON 配置', extensions: ['json'] }] });
       if (selection.canceled || !selection.filePaths.length) return { canceled: true };
       modelsFile = selection.filePaths[0];
