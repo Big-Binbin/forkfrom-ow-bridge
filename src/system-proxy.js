@@ -19,5 +19,30 @@ export function parseSystemProxy(text) {
 }
 export async function systemProxyEnvironment(enabled) {
   if (!enabled) return { NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1' };
+  if (process.platform === 'win32') {
+    const script = "Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' | Select-Object ProxyEnable,ProxyServer | ConvertTo-Json -Compress";
+    const result = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 5000, windowsHide: true });
+    return parseWindowsProxy(JSON.parse(result.stdout));
+  }
+  if (process.platform !== 'darwin') throw new Error('此系统暂不支持读取系统代理');
   return parseSystemProxy((await exec('/usr/sbin/scutil', ['--proxy'], { timeout: 5000 })).stdout);
+}
+
+export function parseWindowsProxy(settings) {
+  if (!Number(settings.ProxyEnable) || !settings.ProxyServer)
+    throw new Error('请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置');
+  const entries = String(settings.ProxyServer).trim().split(';').filter(Boolean);
+  const split = entries.some(x => x.includes('='));
+  const map = split ? Object.fromEntries(entries.map(x => x.trim().split('='))) : { http: entries[0], https: entries[0] };
+  const address = value => {
+    if (!value || /[\s/@?#]/.test(value)) throw new Error('Windows 系统代理地址无效');
+    let url;
+    try { url = new URL('http://' + value); } catch { throw new Error('Windows 系统代理地址无效'); }
+    const port = Number(value.match(/:(\d+)$/)?.[1]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Windows 系统代理端口无效');
+    return url.origin;
+  };
+  const https = address(map.https || map.http), http = address(map.http || map.https);
+  return { HTTP_PROXY: http, HTTPS_PROXY: https, http_proxy: http, https_proxy: https,
+    NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1' };
 }

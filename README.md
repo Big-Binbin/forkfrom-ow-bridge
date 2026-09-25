@@ -1,80 +1,49 @@
 # Buddy Bridge
 
-macOS 原生窗口与托盘应用：将本机 OpenCode 包装为 OpenAI Chat Completions 接口，供 WorkBuddy 使用。独立实现，未复制 OpenCode-Wrap 的代码。
+跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.0 使用 Electron 共用界面和现有 Node.js 代理核心。
 
-## 启动与选择模型
+## 使用
 
-1. 双击 `dist/Buddy Bridge.app`。打开模型控制面板，菜单栏出现分支图标，无终端窗口。关闭窗口后仍在托盘运行。托盘提供重新扫描、检测全部、导入 WorkBuddy 和模型状态，无需打开控制面板；读取或检测期间禁用冲突操作。
-2. 首次启动自动准备 OpenCode 1.18.32：优先复制已有同版本运行时，否则从官方 npm 包下载并校验 SHA-512。无需 npm 或管理员权限。
-3. 每次启动先清理上次导入的模型，自动读取免费目录、检测全部；整轮检测完成后，一次性将可用模型导入 `~/.workbuddy/models.json`。
-4. 在 WorkBuddy 模型列表选择 `OC · …`。已打开的列表可能需要关闭后重新打开。
+- macOS：解压 `Buddy-Bridge-0.2.0-mac-arm64.zip`，双击 Buddy Bridge.app。
+- Windows x64：运行 `Buddy-Bridge-0.2.0-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
+- 首次启动自动准备 OpenCode、扫描免费模型、检测可用性并导入 WorkBuddy。
+- 后续重新扫描或检测不会改 WorkBuddy；点击“导入 WorkBuddy”更新，界面会反馈结果。
+- 关闭窗口继续在托盘运行；从托盘退出时删除本应用导入的模型，保留用户手动配置。
+- 图片输入、推理声明和档位、输入输出上限读取 OpenCode 目录；工具转换能力通过模拟工具请求检测。
+- 系统代理开关支持 Mac 和 Windows 的手动 HTTP/HTTPS 代理。
 
-接口：`http://127.0.0.1:41980/v1`。连接地址和 Key 不在应用界面展示，自动同步即可使用。同步的模型使用完整 `/v1/chat/completions` 地址，无需手填。
+使用问题在抖音/视频号 @娄老师说的对
 
-只更新带 `buddyBridgeOwner: buddy-bridge-v1` 的条目；保留已有模型，发生 ID 冲突时保留用户条目。即使全部不可用，也会清空代理管理的条目（保留用户手动配置）。写入前备份原文件为 `models.json.buddy-bridge-时间戳.bak`，使用原子替换；解析错误或扫描结果为空时不覆盖。
-
-主窗口支持模型详情、检测全部、读取免费模型和导入 WorkBuddy。可用模型排列在上方，待检测模型居中，不可用模型排列在下方；详情不提供单独检测按钮。模型行显示最近检测或实际调用的完整请求耗时（非首字延迟），失败请求标为失败耗时，尚无记录时显示 —。读取免费模型会清空界面列表、更新隔离 OpenCode 服务的目录，随后逐个加入模型并自动检测，不更改 WorkBuddy 配置。检测全部时，尚未完成的模型显示旋转图标，区分等待检测和检测中。每次启动自动扫描目录并顺序发送能力请求检测（工具、普通对话每次请求最多 30 秒，会消耗少量免费额度）。状态区分未检测、可用、额度不足、限流、访问受限、超时和其他异常，展示原始错误和最近检测时间。再次读取、检测或实际调用只更新应用状态和 `/v1/models`，不写 WorkBuddy 配置。点击“导入 WorkBuddy”才用当前可用模型覆盖本应用管理的条目；即使未重新导入，不可用模型的缓存调用也会被代理拒绝。检测结果跨重启保留用于展示，每次启动重新验证。正常退出时自动清理本应用写入的模型，保留手动配置；关闭窗口仍在托盘运行，不算退出。强制杀进程或断电时无法执行退出清理，下次启动会清理残留。额度只根据明确的上游错误判断，不提供剩余额度数字。检测通过只证明对应能力的简单请求可用，不代表复杂工具工作流已验证。
-
-## 执行方式
-
-WorkBuddy 的历史消息、工具定义、工具结果发送给 OpenCode 专用 agent，回复转换成 OpenAI `tool_calls`，由 WorkBuddy 执行。每轮 OpenCode 使用独立会话并完整重放外部历史，结束后删除临时会话。
-
-使用官方 `permission: ask` 审批机制，代理不批准任何 OpenCode 本地操作。遇到本地操作申请，最多拒绝并纠正两次，然后终止请求。`StructuredOutput` 仅用于返回结构化数据，不执行客户端工具。工具名、必需参数及 `tool_choice` 在返回客户端前验证。
-
-没有使用 Plan 作为最终后端：实测 Plan 会把外部写入请求也当成它禁止的操作。也没有使用全部 `deny`：MiMo 在该设置下返回 403。没有伪造请求头或修改 OpenCode 的鉴权机制。
-
-## 当前范围
-
-- macOS 当前架构构建；此处产物为 Apple Silicon，macOS 13+。
-- 文本消息、图片输入、工具调用和 SSE；不支持 Responses API、Anthropic Messages API。图片接受 PNG/JPEG/WebP/GIF 的 base64 data URL，暂不接受远程图片链接或本地文件路径；整个请求上限仍为 8 MB。
-- SSE 在完整回复校验后输出，有等待心跳；不是逐 token 实时显示。
-- 任意复杂 WorkBuddy 工作流的兼容性仍需实际验证。`temperature`、`max_tokens` 等生成参数当前不透传。
-- 免费模型和额度由上游控制。目录中的零价格不保证持续免费或随时可用。
-- 双击启动，不自动开机启动。应用未做 Apple 公证；当前为本地临时签名。
-
-运行时、日志、随机本地 Key 和状态位于 `~/Library/Application Support/Buddy Bridge/`。只监听 `127.0.0.1`，所有 HTTP 接口需 Bearer Key，并拒绝浏览器 Origin。客户端对话会发送给所选模型服务。
-
-## 开发
-
-无 npm 依赖。Node 22+，构建需要 macOS Swift 编译器。
+## 开发与打包
 
 ```sh
+npm ci
 npm test
-NODE_BINARY=/path/to/standalone/node npm run build:mac
+npm run desktop
+npm run build:mac
+npm run build:win
 ```
 
-构建须使用独立的官方 Node 二进制，如 nvm 安装的版本；Homebrew 动态链接版本不能直接打包给其他电脑。
+运行核心服务：`npm start`。开发依赖 Node.js 22+；打包后的应用不要求用户另装 Node。
 
-隔离运行：
+Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为实验性入口，系统代理和 WorkBuddy 集成尚未验证。平台路径、架构、退出清理与实机验收见 [跨平台说明](docs/cross-platform.md)。
 
-```sh
-BUDDY_DATA_DIR=/absolute/test-data BUDDY_NO_SYNC=1 BUDDY_PORT=41982 npm start
-BUDDY_DATA_DIR=/absolute/test-data BUDDY_TEST_MODEL=opencode/space-bunny-free node scripts/smoke-live.mjs
-```
+## 代理行为和限制
 
-托盘“重新同步”读取当前服务目录；重新启动代理会从上游刷新目录。
+OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。WorkBuddy 负责执行外部工具；代理校验模型返回的调用名称、参数和格式。工具检测仅反映单次请求的结果，复杂流程可能仍失败。
 
-## 参考
+所有可用模型在本地 API 中公开。只通过普通对话检测的模型关闭工具调用；不可用模型仍显示在列表，但不会提供给 WorkBuddy。
 
-- [OpenCode 权限](https://opencode.ai/docs/permissions/)
-- [OpenCode 服务 API](https://opencode.ai/docs/server/)
-- [OpenCode-Wrap](https://github.com/Fast-Editor/OpenCode-Wrap)
-- [opencode-llm-proxy](https://github.com/KochC/opencode-llm-proxy)
-- [opencode-bridge](https://github.com/crazyboy24/opencode-bridge)
+模型名称是 `OC · ` 加 OpenCode 原名。导入和退出只修改 `buddyBridgeOwner` 属于本应用的条目，并在实际写入前备份；手动配置保留。配置路径默认 `~/.workbuddy/models.json`，Windows 的 `~` 对应用户目录。
 
-实际 WorkBuddy 引擎的回归验证：
+图片接受 PNG/JPEG/WebP/GIF 的 base64 data URL，不接受远程图片链接或本地文件路径，整个请求上限 8 MB。图片作为附件转发，不调用 OpenCode 原生读取工具。
 
-```sh
-node scripts/smoke-workbuddy.mjs
-BUDDY_TEST_MODEL=opencode/mimo-v2.6-flash-free node scripts/smoke-workbuddy.mjs
-```
+推理声明与可调档位分开处理。支持推理但无档位的模型也勾选推理，保持 OpenCode 默认模式，不提供开关或档位；有档位的填写 `supportedEfforts`，默认优先 medium。`reasoning_effort` 或 `reasoning.effort` 映射为 OpenCode variant，不支持的档位返回 400，不转发思考过程文本。
 
-运行前先等待托盘显示“运行中”。测试只创建一个临时文件，限制工具为 Read/Write；检查真实工具结果和磁盘内容。详见 `docs/validation.md`。
+输入上限优先读取 `limit.input`，缺少时 WorkBuddy 配置回退 `limit.context`；详情仍分别展示上下文与独立输入上限。输出上限读取 `limit.output`。
 
-WorkBuddy 使用与名称相同的短模型 ID（`OC · ` 加 OpenCode 目录原名），避免界面拼接完整上游 ID。代理将短 ID 映射到原始 OpenCode 模型；旧的完整 ID 调用仍受可用性检查。
+支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
-模型名称直接读取 OpenCode 目录的 name，缺失时使用原始 ID，不维护固定简称表。
+## 验证
 
-控制面板的“使用系统代理”开关默认关闭，选择保存在应用 settings.json。开启后读取 macOS 的 HTTP/HTTPS 代理，供 OpenCode 目录刷新和模型请求使用；本地连接始终绕过代理。切换会重新读取并检测，不改 WorkBuddy 配置。当前支持静态 HTTP/HTTPS 系统代理；仅 SOCKS 或 PAC 配置会明确报错。关闭表示应用不主动使用系统代理，不能绕过 VPN 的 TUN 接管。
-
-检测时使用无副作用的模拟工具调用，校验工具名称与随机参数；不兼容时再检测普通文字对话。只通过文字检测的模型标为“可用 · 仅对话”，与其他可用模型一起导入，自动设置 supportsToolCall=false；工具检测通过时设置 true。不再需要单独手动导入。图片输入按 capabilities.input.image 声明自动填写 supportsImages；图片转换为 OpenCode file parts，保留它在历史消息中的位置标记，不调用原生读取工具。扫描同时保存 OpenCode 声明的推理能力和 variants，详情中显示；supportsReasoning 按 OpenCode 推理声明填写，与是否提供可选档位无关；仅有可映射 reasoningEffort 档位的模型开放档位调节，并填写 supportedEfforts。没有显式 none 档位时不提供关闭推理；未提供档位的推理模型仍勾选支持推理，使用 OpenCode 默认模式；设置 onlyReasoning=true、canDisableThinking=false、supportedEfforts=[]，不展示调节开关。WorkBuddy 默认档位优先 medium，否则采用目录中的首个可用档位；API 未指定档位时仍使用 OpenCode 默认值。请求中的 reasoning_effort 或 reasoning.effort 会映射为 OpenCode variant，不支持的档位返回 400。档位来自目录声明，不代表每档都已实测，也不转发思考过程文本。输入、输出和上下文分别保存 OpenCode 的 limit.input、limit.output、limit.context，界面不把上下文冒充独立输入上限。导入 WorkBuddy 时 maxInputTokens 优先使用 limit.input，未单独声明则按其上下文配置语义回退 limit.context；maxOutputTokens 使用 limit.output。能力配置在导入时统一更新，重新检测仍不直接修改 WorkBuddy。
+`npm test` 覆盖协议校验、导入与退出清理、目录能力映射、图片转发、推理档位和系统代理解析。Windows 目标已构建，但 Windows 上的安装、代理读取和 WorkBuddy 联调仍需实机验证。产物未做商用发布签名/公证。

@@ -22,7 +22,7 @@ test('startup imports once; repeated checks and reads require import; exit remov
   await new Promise(resolve => socket.close(resolve));
   const child = spawn(process.execPath, ['--loader', fileURLToPath(new URL('./fixtures/runtime-loader.mjs', import.meta.url)), 'src/main.js'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
-    env: { ...process.env, BUDDY_DATA_DIR: root, BUDDY_PORT: String(port), BUDDY_MODELS_FILE: config, BUDDY_NO_SYNC: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, BUDDY_DATA_DIR: root, BUDDY_PORT: String(port), BUDDY_MODELS_FILE: config, BUDDY_NO_SYNC: '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let logs = ''; child.stdout.on('data', x => logs += x); child.stderr.on('data', x => logs += x);
   const exited = new Promise(resolve => child.once('exit', resolve));
@@ -75,10 +75,10 @@ test('startup imports once; repeated checks and reads require import; exit remov
     assert.equal(imported[2].supportsToolCall, false);
     await post('probe');
     await waitFor(s => s.probe.running);
-    child.kill('SIGTERM'); await exited;
+    child.send('shutdown'); await exited;
     assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Exit removes only owned entries');
   } finally {
-    if (child.exitCode === null) { child.kill('SIGTERM'); await exited; }
+    if (child.exitCode === null) { child.send('shutdown'); await exited; }
     await fs.rm(root, { recursive: true, force: true });
   }
 });

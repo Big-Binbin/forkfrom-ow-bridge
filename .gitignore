@@ -2,3 +2,5 @@ dist/
 .DS_Store
 *.log
 .runtime/
+node_modules/
+release/

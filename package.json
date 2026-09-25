@@ -1,12 +1,61 @@
 {
   "name": "buddy-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node src/main.js",
     "test": "node --test test/*.test.js",
-    "build:mac": "bash scripts/build-mac.sh"
+    "build:mac": "electron-builder --mac zip --arm64 --publish never",
+    "desktop": "electron .",
+    "build:win": "electron-builder --win nsis --x64 --publish never",
+    "build:win:arm64": "electron-builder --win nsis --arm64 --publish never",
+    "build:linux": "electron-builder --linux AppImage --x64 --publish never"
+  },
+  "dependencies": {
+    "tar": "7.5.22"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "description": "OpenCode free models for WorkBuddy",
+  "author": "Buddy Bridge",
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "local.buddy.bridge",
+    "productName": "Buddy Bridge",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": false,
+    "artifactName": "Buddy-Bridge-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "minimumSystemVersion": "13.0"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "linux": {
+      "category": "Utility"
+    },
+    "icon": "desktop/icon.png"
   }
 }

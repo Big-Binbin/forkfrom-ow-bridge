@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { dataDirectory } from './platform.js';
 import { randomBytes } from 'node:crypto';
 import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
@@ -10,7 +11,7 @@ import { prepare, BridgeError } from './protocol.js';
 import { modelResult } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
-const dataDir = process.env.BUDDY_DATA_DIR || path.join(os.homedir(), 'Library/Application Support/Buddy Bridge');
+const dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
 const port = Number(process.env.BUDDY_PORT || 41980);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid BUDDY_PORT');
 await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -33,7 +34,7 @@ const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, binary, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
+let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -189,6 +190,8 @@ async function shutdown(code = 0) {
   log.end(); await fs.unlink(lockFile).catch(() => {});
   process.exit(code);
 }
+process.on('message', message => { if (message === 'shutdown') shutdown(); });
+process.on('disconnect', () => shutdown());
 process.on('SIGTERM', () => shutdown()); process.on('SIGINT', () => shutdown());
 process.on('uncaughtException', e => { update({ phase: 'error', message: e.message }); shutdown(1); });
 process.on('unhandledRejection', e => { update({ phase: 'error', message: String(e?.message || e) }); shutdown(1); });

@@ -1,0 +1,31 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            build: build:mac
+          - os: windows-latest
+            build: build:win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run ${{ matrix.build }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddy-bridge-${{ matrix.os }}
+          path: |
+            release/*.zip
+            release/*.exe

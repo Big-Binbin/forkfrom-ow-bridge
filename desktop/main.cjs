@@ -1,0 +1,137 @@
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } = require('electron');
+const { fork, execFile } = require('node:child_process');
+const fs = require('node:fs/promises');
+const { createWriteStream } = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+app.setName('Buddy Bridge');
+app.setAppUserModelId('local.buddy.bridge');
+let window, tray, service, timer, log, quitting = false, mayQuit = false, actionBusy = false;
+let state = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} };
+let dataDir, lastMenu = '';
+const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
+
+function showWindow() {
+  if (!window) {
+    window = new BrowserWindow({ width: 1040, height: 740, minWidth: 880, minHeight: 620, title: 'Buddy Bridge', backgroundColor: '#ffffff',
+      webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    window.setMenu(null);
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', event => event.preventDefault());
+    window.webContents.on('did-finish-load', publish);
+    window.on('close', event => { if (!mayQuit) { event.preventDefault(); window.hide(); } });
+    window.on('blur', () => window.webContents.send('dismiss-details'));
+    window.on('session-end', () => app.quit());
+    window.loadFile(path.join(__dirname, 'index.html'));
+  }
+  window.show(); window.focus();
+}
+function publish() {
+  if (window && !window.isDestroyed()) window.webContents.send('state', { ...state, actionBusy });
+  if (!tray) return;
+  const signature = JSON.stringify([state, actionBusy]);
+  if (signature === lastMenu) return;
+  lastMenu = signature;
+  const available = new Set(state.availableModels || []);
+  const busy = actionBusy || state.probe?.running || state.phase !== 'ready';
+  tray.setToolTip('Buddy Bridge');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: state.probe?.running ? '正在检测模型…' : state.message || '正在启动…', enabled: false },
+    { label: '打开控制面板', click: showWindow }, { type: 'separator' },
+    { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
+    { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
+    { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
+    { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
+    { type: 'separator' }, { label: '退出 Buddy Bridge', click: () => app.quit() },
+  ]));
+}
+async function readState() {
+  try {
+    const value = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8'));
+    if (value.pid === service?.pid && !quitting) { state = value; publish(); }
+  } catch {}
+}
+async function action(name, value) {
+  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart'].includes(name)) throw new Error('未知操作');
+  if (actionBusy) throw new Error('请等待当前操作完成');
+  if (name === 'restart') {
+    actionBusy = name; publish();
+    try { await stopService(); state = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} }; await startService(); return {}; }
+    finally { actionBusy = false; publish(); }
+  }
+  if ((state.phase !== 'ready' && !(name === 'system-proxy' && state.phase === 'error')) || state.probe?.running) throw new Error('请等待服务启动和检测完成');
+  if (name === 'system-proxy' && typeof value !== 'boolean') throw new Error('代理开关必须为布尔值');
+  actionBusy = name; publish();
+  try {
+    const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
+    const endpoint = `http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}`;
+    const response = await fetch(`${endpoint}/admin/${name}`, { method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(name === 'system-proxy' ? { enabled: value } : {}), signal: AbortSignal.timeout(150000) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error?.message || `HTTP ${response.status}`);
+    await readState();
+    return result;
+  } finally { actionBusy = false; publish(); }
+}
+async function trayAction(name) {
+  try {
+    const result = await action(name);
+    if (name === 'import') await dialog.showMessageBox({ type: 'info', title: 'Buddy Bridge', message: '导入完成', detail: importMessage(result) });
+  } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'Buddy Bridge', message: '操作失败', detail: e.message }); }
+}
+function importMessage(result) {
+  return result.changed === false ? `WorkBuddy 配置已是最新，共 ${result.count} 个模型，无需重复写入。` : `已将 ${result.count} 个可用模型导入 WorkBuddy。`;
+}
+async function startService() {
+  await fs.mkdir(dataDir, { recursive: true });
+  log = createWriteStream(path.join(dataDir, 'app.log'), { flags: 'a' });
+  service = fork(path.join(__dirname, '..', 'src', 'main.js'), [], { execPath: process.execPath, execArgv: [],
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BUDDY_DATA_DIR: dataDir }, cwd: dataDir, windowsHide: true, silent: true });
+  service.stdout.pipe(log, { end: false }); service.stderr.pipe(log, { end: false });
+  service.on('error', error => { state = { ...state, phase: 'error', message: error.message }; publish(); });
+  service.on('exit', code => {
+    if (!quitting) { state = { ...state, phase: 'error', message: `服务已退出（${code}），请退出后重新启动应用` }; publish(); }
+  });
+  timer = setInterval(readState, 500);
+}
+async function stopService() {
+  clearInterval(timer);
+  if (service && service.exitCode === null && service.signalCode === null) {
+    const exited = new Promise(resolve => service.once('exit', resolve));
+    if (service.connected) service.send('shutdown', () => {});
+    const finished = await Promise.race([exited.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 20000))]);
+    if (!finished) {
+      if (process.platform === 'win32') await new Promise(resolve => execFile('taskkill.exe', ['/PID', String(service.pid), '/T', '/F'], { windowsHide: true }, resolve));
+      else service.kill('SIGKILL');
+    }
+  }
+  log?.end();
+}
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', showWindow);
+  app.on('activate', showWindow);
+  app.on('window-all-closed', () => {});
+  app.on('before-quit', event => {
+    if (mayQuit) return;
+    event.preventDefault();
+    if (quitting) return;
+    quitting = true;
+    stopService().finally(() => { mayQuit = true; app.quit(); });
+  });
+  app.whenReady().then(async () => {
+    const { dataDirectory } = await import('../src/platform.js');
+    dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Buddy Bridge', submenu: [{ label: '退出 Buddy Bridge', role: 'quit' }] }, { label: '编辑', submenu: [{ label: '复制', role: 'copy' }, { label: '全选', role: 'selectAll' }] }]));
+    app.setPath('userData', dataDir);
+    ipcMain.handle('action', async (event, name, value) => {
+      if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('拒绝未知来源');
+      try { return { ok: true, result: await action(name, value) }; } catch (error) { return { ok: false, error: error.message }; }
+    });
+    tray = new Tray(nativeImage.createFromPath(path.join(__dirname, process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')));
+    tray.on('click', showWindow);
+    showWindow(); publish(); await startService();
+  }).catch(error => { dialog.showErrorBox('启动失败', error.message); app.quit(); });
+}
