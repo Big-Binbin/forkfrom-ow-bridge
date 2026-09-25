@@ -1,3 +1,4 @@
+import { reasoningEfforts } from './reasoning.js';
 import { clientModelID } from './model-status.js';
 import { randomUUID } from 'node:crypto';
 
@@ -14,6 +15,11 @@ export function prepare(body, models) {
   const model = matches.length === 1 ? matches[0] : undefined;
   if (!model) throw new BridgeError('Select an available free model from /v1/models', 400, 'model_not_found');
   if (body.n !== undefined && body.n !== 1) throw new BridgeError('Only n=1 is supported');
+  const effort = body.reasoning_effort ?? body.reasoning?.effort;
+  const efforts = reasoningEfforts(model);
+  const variant = typeof effort === 'string' && Object.hasOwn(efforts, effort) ? efforts[effort] : undefined;
+  if (effort !== undefined && (typeof effort !== 'string' || !variant))
+    throw new BridgeError('Requested reasoning effort is not available for this model', 400, 'unsupported_reasoning_effort');
   const tools = body.tools ?? [];
   if (!Array.isArray(tools) || tools.some(t => t.type !== 'function' || !t.function?.name))
     throw new BridgeError('Only function tools are supported');
@@ -36,7 +42,7 @@ export function prepare(body, models) {
   });
   if (model.chatOnly) {
     if (tools.length || forced || choice === 'required') throw new BridgeError('此模型仅支持普通对话，不支持 WorkBuddy 工具；请切换支持工具的模型', 400, 'tools_not_supported');
-    return { model, chatOnly: true, tools: [], choice: 'none', system: 'Continue the conversation provided as JSON. Reply in plain text. You have no tools. Do not invoke native tools or claim to execute actions. If an action is requested, explain that this model supports chat only.', text: JSON.stringify(messages) };
+    return { model, variant, chatOnly: true, tools: [], choice: 'none', system: 'Continue the conversation provided as JSON. Reply in plain text. You have no tools. Do not invoke native tools or claim to execute actions. If an action is requested, explain that this model supports chat only.', text: JSON.stringify(messages) };
   }
   const system = [
     'You decide the next response or action for WorkBuddy, the external assistant. WorkBuddy alone executes actions. Its conversation is provided as JSON.',
@@ -53,7 +59,7 @@ export function prepare(body, models) {
     choice === 'none' || !tools.length ? 'calls MUST be empty.' : forced ? `Call ONLY ${JSON.stringify(forced)} at least once.` : choice === 'required' ? 'Return at least one tool call.' : 'Call tools only when needed. After receiving tool results, answer or request the next action.',
     body.parallel_tool_calls === false ? 'Return at most one tool call.' : '',
   ].filter(Boolean).join('\n');
-  return { model, system, text: JSON.stringify(messages), tools, choice, forced, parallel: body.parallel_tool_calls !== false };
+  return { model, variant, system, text: JSON.stringify(messages), tools, choice, forced, parallel: body.parallel_tool_calls !== false };
 }
 
 export function decode(text, request) {

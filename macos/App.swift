@@ -348,6 +348,11 @@ struct Dashboard: View {
                         if results[id]?["ok"] as? Bool == true && results[id]?["chatOnly"] as? Bool == true {
                             Text("已自动关闭工具调用；导入后仅支持普通对话。").font(.caption).foregroundColor(.secondary)
                         }
+                        if let model = models.first(where: { $0["id"] as? String == id }) {
+                            let variants = model["variants"] as? [String: Any] ?? [:]
+                            Text(model["reasoning"] as? Bool == true ? "推理：支持 · " + (variants.isEmpty ? "使用默认模式" : "可选档位：" + variants.keys.sorted().joined(separator: " / ")) : "推理：OpenCode 未声明支持")
+                                .font(.caption).foregroundColor(.secondary).textSelection(.enabled)
+                        }
                         if let error = results[id]?["error"] as? String { Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).lineLimit(4) }
                         Text("最近更新：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)
                     }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9).detailHitArea("detail")

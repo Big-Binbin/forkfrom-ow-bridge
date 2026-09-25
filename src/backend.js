@@ -11,7 +11,7 @@ export function freeModels(providers) {
     const c = m.cost;
     return c && c.input === 0 && c.output === 0 && (c.cache?.read ?? 0) === 0 && (c.cache?.write ?? 0) === 0
       && m.capabilities?.output?.text !== false && m.status !== 'deprecated';
-  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.input ?? m.limit?.context, output: m.limit?.output, toolcall: m.capabilities?.toolcall === true }))
+  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.input ?? m.limit?.context, output: m.limit?.output, toolcall: m.capabilities?.toolcall === true, reasoning: m.capabilities?.reasoning === true, variants: m.variants ?? {} }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -68,6 +68,7 @@ export class Backend {
       };
       const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', {
         model: { providerID: 'opencode', modelID: request.model.id.slice('opencode/'.length) },
+        ...(request.variant ? { variant: request.variant } : {}),
         agent: request.chatOnly ? 'buddy-chat' : 'buddy-bridge', system: request.chatOnly ? request.system : request.system + '\nUse StructuredOutput to return this envelope. All other native tools are forbidden; do not perform the external actions yourself.',
         ...(request.chatOnly ? {} : { format: { type: 'json_schema', retryCount: 0, schema: {
           type: 'object', properties: { content: { type: 'string' }, calls: callsSchema },

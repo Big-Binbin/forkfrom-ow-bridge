@@ -273,3 +273,47 @@ test('import fills capabilities and token limits from detected model metadata', 
   assert.equal(result[1].maxOutputTokens, 500);
   assert.equal(mergeModels([], models, 'local', 'key')[0].supportsToolCall, true);
 });
+
+
+test('reasoning scan preserves variants; import advertises only mapped controls', () => {
+  const discovered = freeModels({ all: [{ id: 'opencode', models: {
+    test: { name: 'Test', cost: { input: 0, output: 0 }, capabilities: { reasoning: true },
+      variants: { fast: { reasoningEffort: 'low' }, deep: { reasoningEffort: 'high' }, hidden: { reasoningEffort: 'max', disabled: true } } },
+    default: { cost: { input: 0, output: 0 }, capabilities: { reasoning: true }, variants: {} },
+  } }] });
+  const model = discovered.find(m => m.id === 'opencode/test');
+  assert.equal(model.reasoning, true);
+  assert.deepEqual(model.variants.fast, { reasoningEffort: 'low' });
+  const imported = mergeModels([], discovered, 'local', 'key');
+  const entry = imported.find(m => m.name === 'OC · Test');
+  assert.equal(entry.supportsReasoning, true);
+  assert.equal(entry.onlyReasoning, true);
+  assert.equal(entry.reasoning.canDisableThinking, false);
+  assert.deepEqual(entry.reasoning.supportedEfforts, ['low', 'high']);
+  assert.equal(imported.find(m => m.name === 'OC · default').supportsReasoning, false);
+  const request = { model: model.id, messages: body.messages };
+  assert.equal(prepare(request, [model]).variant, undefined);
+  assert.equal(prepare({ ...request, reasoning_effort: 'high' }, [model]).variant, 'deep');
+  for (const effort of ['none', 'max', 'toString', {}]) {
+    assert.throws(() => prepare({ ...request, reasoning_effort: effort }, [model]), /reasoning effort/);
+  }
+});
+
+test('reasoning selection reaches OpenCode for tool and plain chat requests', async () => {
+  const backend = new Backend('http://unused', 'test');
+  let sent;
+  backend.request = async (route, method, data) => {
+    if (route === '/session') return { id: 'reasoning' };
+    if (route === '/permission') return [];
+    if (route.endsWith('/message')) {
+      sent = data;
+      return { info: {}, parts: [{ type: 'text', text: data.agent === 'buddy-chat' ? 'OK' : '{"content":"OK","calls":[]}' }] };
+    }
+    return true;
+  };
+  for (const chatOnly of [false, true]) {
+    const model = { ...models[0], chatOnly, reasoning: true, variants: { deep: { reasoningEffort: 'high' } } };
+    await backend.complete(prepare({ model: model.id, messages: body.messages, reasoning: { effort: 'high' } }, [model]));
+    assert.equal(sent.variant, 'deep');
+  }
+});
