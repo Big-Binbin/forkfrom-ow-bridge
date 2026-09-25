@@ -81,6 +81,7 @@ async function run(name, value) {
     if (!response.ok) throw new Error(response.error);
     if (name === 'import') {
       const r = response.result;
+      if (r.canceled) { feedback('已取消导入，配置未更改。'); return; }
       feedback(r.changed === false ? `配置已是最新，共 ${r.count} 个模型，无需重复写入。` : `导入完成，已将 ${r.count} 个可用模型导入 WorkBuddy。`);
     }
   } catch (error) { feedback(error.message, true); }

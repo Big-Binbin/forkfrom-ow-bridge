@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { resolveModelsFile, validateModelsFile } from './workbuddy-config.js';
 import { dataDirectory } from './platform.js';
 import { randomBytes } from 'node:crypto';
 import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
@@ -49,14 +49,18 @@ const validated = new Set();
 const usableModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true).map(m => ({ ...m, chatOnly: state.modelResults[m.id]?.chatOnly === true }));
 const publishedModels = usableModels;
 let syncWrites = Promise.resolve();
-const modelsFile = process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
+let modelsFile = await resolveModelsFile({ saved: settings.workBuddyModelsFile });
+update({ modelsFile });
 
 function syncPublished(published = publishedModels()) {
   syncWrites = syncWrites.then(async () => {
     let sync;
     if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
     else {
-      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true }); }
+      try {
+        if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请点击导入并选择 models.json；首次使用请先在 WorkBuddy 保存一个自定义模型。');
+        sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true, requireExisting: true });
+      }
       catch (e) { sync = { error: e.message }; }
     }
     update({ sync: { ...sync, time: new Date().toISOString() } });
@@ -168,8 +172,18 @@ async function setSystemProxy(enabled) {
   startProbes(undefined, true);
   return { useSystemProxy: enabled };
 }
-async function importModels() {
+async function importModels(selectedFile) {
   if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
+  if (selectedFile !== undefined) {
+    await validateModelsFile(selectedFile);
+    if (modelsFile && modelsFile !== selectedFile && await fs.stat(modelsFile).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
+      const cleanup = await syncPublished([]);
+      if (cleanup.error) throw new Error(cleanup.error);
+    }
+    const nextSettings = { ...settings, workBuddyModelsFile: selectedFile };
+    await atomicWrite(settingsFile, JSON.stringify(nextSettings));
+    settings = nextSettings; modelsFile = selectedFile; update({ modelsFile });
+  }
   const sync = await syncPublished();
   if (sync.error) throw new Error(sync.error);
   return sync;

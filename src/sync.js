@@ -39,12 +39,12 @@ export async function syncModels(file, models, endpoint, key, options = {}) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const lock = await fs.open(`${file}.buddy-bridge.lock`, 'wx', 0o600).catch(() => { throw new Error('Model sync already running; no changes made'); });
   try {
-    const old = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+    const old = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT' && !options.requireExisting) return null; throw e; });
     const document = old === null ? [] : JSON.parse(old);
     const merged = mergeModels(document, models, endpoint, key, options);
     const count = (Array.isArray(merged) ? merged : merged.models).filter(m => m.buddyBridgeOwner === OWNER).length;
     if (JSON.stringify(merged) === JSON.stringify(document)) return { changed: false, count };
-    const current = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+    const current = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT' && !options.requireExisting) return null; throw e; });
     if (current !== old) throw new Error('WorkBuddy configuration changed during sync; retry refresh');
     let backup;
     if (old !== null) {

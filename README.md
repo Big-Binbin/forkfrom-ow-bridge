@@ -6,7 +6,8 @@
 
 - macOS：解压 `Buddy-Bridge-0.2.0-mac-arm64.zip`，双击 Buddy Bridge.app。
 - Windows x64：运行 `Buddy-Bridge-0.2.0-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
-- 首次启动自动准备 OpenCode、扫描免费模型、检测可用性并导入 WorkBuddy。
+- 首次启动自动准备 OpenCode、扫描免费模型、检测可用性；找到有效 WorkBuddy 配置后自动导入。
+- 自动识别默认配置、已保存位置和 WorkBuddy 配置目录环境变量。找不到时点击“导入 WorkBuddy”选择已有的 `models.json`；首次使用请先在 WorkBuddy 保存一个自定义模型。托盘菜单“选择 WorkBuddy 配置…”可更换位置，切换时清理旧文件中的本应用条目。不会在猜测的位置新建模型配置。
 - 后续重新扫描或检测不会改 WorkBuddy；点击“导入 WorkBuddy”更新，界面会反馈结果。
 - 关闭窗口继续在托盘运行；从托盘退出时删除本应用导入的模型，保留用户手动配置。
 - 图片输入、推理声明和档位、输入输出上限读取 OpenCode 目录；工具转换能力通过模拟工具请求检测。

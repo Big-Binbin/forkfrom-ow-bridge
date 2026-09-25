@@ -42,6 +42,7 @@ function publish() {
     { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
     { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
+    { label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') },
     { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
     { type: 'separator' }, { label: '退出 Buddy Bridge', click: () => app.quit() },
   ]));
@@ -53,7 +54,7 @@ async function readState() {
   } catch {}
 }
 async function action(name, value) {
-  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart'].includes(name)) throw new Error('未知操作');
+  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart', 'choose-config'].includes(name)) throw new Error('未知操作');
   if (actionBusy) throw new Error('请等待当前操作完成');
   if (name === 'restart') {
     actionBusy = name; publish();
@@ -64,11 +65,18 @@ async function action(name, value) {
   if (name === 'system-proxy' && typeof value !== 'boolean') throw new Error('代理开关必须为布尔值');
   actionBusy = name; publish();
   try {
+    let modelsFile;
+    if (name === 'choose-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile()))) {
+      const selection = await dialog.showOpenDialog({ title: '选择 WorkBuddy 的 models.json', message: '请选择 WorkBuddy 实际使用的配置文件。首次使用请先在 WorkBuddy 保存一个自定义模型。', properties: ['openFile'], filters: [{ name: 'JSON 配置', extensions: ['json'] }] });
+      if (selection.canceled || !selection.filePaths.length) return { canceled: true };
+      modelsFile = selection.filePaths[0];
+      name = 'import';
+    }
     const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
     const endpoint = `http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}`;
     const response = await fetch(`${endpoint}/admin/${name}`, { method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(name === 'system-proxy' ? { enabled: value } : {}), signal: AbortSignal.timeout(150000) });
+      body: JSON.stringify(name === 'system-proxy' ? { enabled: value } : modelsFile ? { modelsFile } : {}), signal: AbortSignal.timeout(150000) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error?.message || `HTTP ${response.status}`);
     await readState();
@@ -78,7 +86,7 @@ async function action(name, value) {
 async function trayAction(name) {
   try {
     const result = await action(name);
-    if (name === 'import') await dialog.showMessageBox({ type: 'info', title: 'Buddy Bridge', message: '导入完成', detail: importMessage(result) });
+    if (['import', 'choose-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'Buddy Bridge', message: '导入完成', detail: importMessage(result) });
   } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'Buddy Bridge', message: '操作失败', detail: e.message }); }
 }
 function importMessage(result) {

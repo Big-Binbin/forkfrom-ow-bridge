@@ -73,10 +73,21 @@ test('startup imports once; repeated checks and reads require import; exit remov
     const imported = JSON.parse(await fs.readFile(config, 'utf8'));
     assert.deepEqual(imported.map(m => m.id), ['personal', 'OC · A', 'OC · B']);
     assert.equal(imported[2].supportsToolCall, false);
+    const alternate = path.join(root, 'custom', 'models.json');
+    await fs.mkdir(path.dirname(alternate));
+    await fs.writeFile(alternate, JSON.stringify([manual]));
+    await post('import', { modelsFile: alternate });
+    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Switching location clears only previously managed entries');
+    assert.equal(JSON.parse(await fs.readFile(alternate, 'utf8')).length, 3);
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, 'settings.json'), 'utf8')).workBuddyModelsFile, alternate);
+    await fs.unlink(alternate);
+    await post('import', { modelsFile: config });
+    assert.equal(JSON.parse(await fs.readFile(config, 'utf8')).length, 3, 'A moved or deleted old file does not block choosing another configuration');
     await post('probe');
     await waitFor(s => s.probe.running);
     child.send('shutdown'); await exited;
-    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Exit removes only owned entries');
+    await assert.rejects(fs.stat(alternate), { code: 'ENOENT' });
+    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Exit cleans the selected configuration');
   } finally {
     if (child.exitCode === null) { child.send('shutdown'); await exited; }
     await fs.rm(root, { recursive: true, force: true });
