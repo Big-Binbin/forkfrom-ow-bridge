@@ -290,7 +290,12 @@ test('reasoning scan preserves variants; import advertises only mapped controls'
   assert.equal(entry.onlyReasoning, true);
   assert.equal(entry.reasoning.canDisableThinking, false);
   assert.deepEqual(entry.reasoning.supportedEfforts, ['low', 'high']);
-  assert.equal(imported.find(m => m.name === 'OC · default').supportsReasoning, false);
+  const fixed = imported.find(m => m.name === 'OC · default');
+  assert.equal(fixed.supportsReasoning, true);
+  assert.equal(fixed.onlyReasoning, true);
+  assert.deepEqual(fixed.reasoning, { supportedEfforts: [], canDisableThinking: false });
+  const fixedModel = discovered.find(m => m.id === 'opencode/default');
+  assert.equal(prepare({ model: fixedModel.id, messages: body.messages }, [fixedModel]).variant, undefined);
   const request = { model: model.id, messages: body.messages };
   assert.equal(prepare(request, [model]).variant, undefined);
   assert.equal(prepare({ ...request, reasoning_effort: 'high' }, [model]).variant, 'deep');

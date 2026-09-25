@@ -9,7 +9,11 @@ export function reasoningEfforts(model) {
 export function workBuddyReasoning(model) {
   const supportedEfforts = Object.keys(reasoningEfforts(model));
   const enabled = supportedEfforts.filter(e => e !== 'none');
-  if (!enabled.length) return { supportsReasoning: false };
+  if (!model.reasoning) return { supportsReasoning: false };
+  if (!enabled.length) return {
+    supportsReasoning: true, onlyReasoning: true,
+    reasoning: { supportedEfforts: [], canDisableThinking: false },
+  };
   return {
     supportsReasoning: true,
     onlyReasoning: !supportedEfforts.includes('none'),
