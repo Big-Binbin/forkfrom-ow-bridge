@@ -207,9 +207,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         return .terminateNow
     }
 }
+private struct DetailHitAreas: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, new in new }) }
+}
+private extension View {
+    func detailHitArea(_ id: String) -> some View {
+        background(GeometryReader { geometry in
+            Color.clear.preference(key: DetailHitAreas.self, value: [id: geometry.frame(in: .named("dashboard"))])
+        })
+    }
+}
 struct Dashboard: View {
     @ObservedObject var app: AppDelegate
     @State private var selected: String?
+    @State private var detailHitAreas: [String: CGRect] = [:]
     var models: [[String: Any]] { app.status["models"] as? [[String: Any]] ?? [] }
     var results: [String: [String: Any]] { app.status["modelResults"] as? [String: [String: Any]] ?? [:] }
     var probe: [String: Any] { app.status["probe"] as? [String: Any] ?? [:] }
@@ -321,11 +333,11 @@ struct Dashboard: View {
                                     Spacer()
                                     Text(label(id)).font(.caption).foregroundColor(tint(id)).padding(.horizontal, 9).padding(.vertical, 5).background(tint(id).opacity(0.1)).cornerRadius(6)
                                 }.padding(13).background(selected == id ? accent.opacity(0.08) : Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
-                            }.buttonStyle(.plain)
+                            }.buttonStyle(.plain).detailHitArea("row:" + id)
                         }
                     }
                     if models.isEmpty { Text("正在安装或扫描模型，完成后将在这里显示。").foregroundColor(.secondary).padding(.vertical, 50) }
-                }
+                }.detailHitArea("list")
                 if let id = selected, models.contains(where: { $0["id"] as? String == id }) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -334,7 +346,7 @@ struct Dashboard: View {
                         }
                         if let error = results[id]?["error"] as? String { Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).lineLimit(4) }
                         Text("最近更新：" + (results[id]?["time"] as? String ?? "尚未检测")).font(.caption).foregroundColor(.secondary)
-                    }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
+                    }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9).detailHitArea("detail")
                 }
                 let sync = app.status["sync"] as? [String: Any]
                 Text(sync?["error"] as? String ?? (sync?["time"] != nil ? "已导入 \(sync?["count"] as? Int ?? 0) 个模型 · 再次检测后需点击导入 WorkBuddy 更新" : "首次读取和检测完成后自动导入 WorkBuddy"))
@@ -342,6 +354,17 @@ struct Dashboard: View {
                 Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(minWidth: 880, minHeight: 620)
+        .coordinateSpace(name: "dashboard")
+        .onPreferenceChange(DetailHitAreas.self) { detailHitAreas = $0 }
+        .contentShape(Rectangle())
+        .simultaneousGesture(SpatialTapGesture().onEnded { event in
+            let inDetail = detailHitAreas["detail"]?.contains(event.location) == true
+            let inRow = detailHitAreas["list"]?.contains(event.location) == true && detailHitAreas.contains { $0.key.hasPrefix("row:") && $0.value.contains(event.location) }
+            if !inDetail && !inRow { selected = nil }
+        })
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
+            if let window = notification.object as? NSWindow, window === app.window { selected = nil }
+        }
     }
     func metric(_ title: String, _ value: Int) -> some View {
         VStack(alignment: .leading, spacing: 3) { Text(String(value)).font(.system(size: 23, weight: .semibold, design: .rounded)); Text(title).font(.caption).foregroundColor(.secondary) }
