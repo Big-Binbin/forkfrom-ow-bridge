@@ -128,7 +128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         let modelsItem = NSMenuItem(title: "模型状态（\(available.count)/\(models.count) 可用）", action: nil, keyEquivalent: "")
         modelsItem.submenu = modelsMenu; menu.addItem(modelsItem)
         menu.addItem(.separator())
-        add(menu, "打开 WorkBuddy", #selector(openWorkBuddy))
         add(menu, "查看日志", #selector(openLogs))
         menu.addItem(.separator())
         add(menu, "退出 Buddy Bridge", #selector(quit))
@@ -160,7 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         }.resume()
     }
     @objc func openLogs() { NSWorkspace.shared.open(dataURL) }
-    @objc func openWorkBuddy() { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/WorkBuddy.app")) }
     @objc func restart() {
         waitingForRestart = true
         previousPID = process.map { Int($0.processIdentifier) }
@@ -242,7 +240,6 @@ struct Dashboard: View {
                 Label("模型与服务", systemImage: "square.grid.2x2.fill").font(.headline).foregroundColor(accent)
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading).background(accent.opacity(0.09)).cornerRadius(9)
                 Spacer()
-                Button("打开 WorkBuddy", action: app.openWorkBuddy)
                 Button("日志与状态文件", action: app.openLogs)
                 Text("关闭窗口后，代理仍在托盘运行。\n退出请使用托盘菜单。").font(.caption).foregroundColor(.secondary).lineSpacing(4)
             }.padding(24).frame(width: 205).frame(maxHeight: .infinity).background(Color(nsColor: .controlBackgroundColor))
