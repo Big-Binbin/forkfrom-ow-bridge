@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var status: [String: Any] = [:]
     var window: NSWindow?
     var quitting = false
+    var waitingForRestart = false
+    var previousPID: Int?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A second double-click activates the existing menu application.
@@ -81,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func refreshMenu() {
         if let bytes = try? Data(contentsOf: dataURL.appendingPathComponent("status.json")),
            let decoded = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
+            if waitingForRestart {
+                guard let pid = decoded["pid"] as? Int, pid != previousPID, pid == process.map({ Int($0.processIdentifier) }) else { return }
+                waitingForRestart = false
+            }
             if NSDictionary(dictionary: decoded).isEqual(to: status) && item.menu != nil { return }
             status = decoded
         }
@@ -99,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let results = status["modelResults"] as? [String: [String: Any]] ?? [:]
         for model in status["models"] as? [[String: Any]] ?? [] {
             let result = results[model["id"] as? String ?? ""]
-            let label = result == nil ? "未测试" : result?["ok"] as? Bool == true ? "最近成功" : "最近失败"
+            let label = result == nil ? "未测试" : result?["ok"] as? Bool == true ? "可用" : "不可用"
             add(modelsMenu, "OC · \(model["name"] as? String ?? "") · \(label)", nil)
         }
         let modelsItem = NSMenuItem(title: "免费模型列表", action: nil, keyEquivalent: "")
@@ -130,6 +136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func openLogs() { NSWorkspace.shared.open(dataURL) }
     @objc func openWorkBuddy() { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/WorkBuddy.app")) }
     @objc func restart() {
+        waitingForRestart = true
+        previousPID = process.map { Int($0.processIdentifier) }
+        status = ["phase": "starting", "message": "正在读取免费模型…", "models": []]
+
         if let child = process, child.isRunning {
             child.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.process = nil; self?.launch() } }
             child.terminate()
@@ -155,6 +165,9 @@ struct Dashboard: View {
     var probe: [String: Any] { app.status["probe"] as? [String: Any] ?? [:] }
     var ready: Bool { app.status["phase"] as? String == "ready" }
     var checking: Bool { probe["running"] as? Bool == true }
+    func pending(_ id: String) -> Bool {
+        checking && (probe["pending"] as? [String] ?? []).contains(id)
+    }
     func responseTime(_ id: String) -> String {
         guard let result = results[id], let ms = result["durationMs"] as? Double else { return "响应耗时 —" }
         let source = result["source"] as? String == "probe" ? "检测" : "调用"
@@ -164,8 +177,8 @@ struct Dashboard: View {
     }
     func rank(_ model: [String: Any]) -> Int {
         let id = model["id"] as? String ?? ""
+        if pending(id) { return 1 }
         if (app.status["availableModels"] as? [String] ?? []).contains(id) { return 0 }
-        if checking && probe["current"] as? String == id { return 1 }
         return results[id]?["ok"] as? Bool == false ? 2 : 1
     }
     var orderedModels: [[String: Any]] {
@@ -176,21 +189,21 @@ struct Dashboard: View {
     }
     let accent = Color(red: 0.15, green: 0.43, blue: 0.36)
     func label(_ id: String) -> String {
-        if checking && probe["current"] as? String == id { return "检测中" }
+        if pending(id) { return probe["current"] as? String == id ? "检测中" : "等待检测" }
         guard let r = results[id] else { return "未检测" }
         switch r["category"] as? String {
-        case "available": return (app.status["availableModels"] as? [String] ?? []).contains(id) ? "最近可用" : "待复测"
+        case "available": return (app.status["availableModels"] as? [String] ?? []).contains(id) ? "可用" : "待复测"
         case "quota": return "额度不足"
         case "rate_limit": return "请求限流"
         case "access": return "访问受限"
         case "timeout": return "检测超时"
         case "error": return "调用异常"
-        default: return r["ok"] as? Bool == true ? "最近可用" : "调用异常"
+        default: return r["ok"] as? Bool == true ? "可用" : "调用异常"
         }
     }
     func tint(_ id: String) -> Color {
-        if label(id) == "最近可用" { return accent }
-        if label(id) == "未检测" || label(id) == "检测中" { return .secondary }
+        if label(id) == "可用" { return accent }
+        if label(id) == "未检测" || label(id) == "检测中" || label(id) == "等待检测" { return .secondary }
         return .orange
     }
     var body: some View {
@@ -217,7 +230,12 @@ struct Dashboard: View {
                     }
                     Spacer()
                     Button("读取免费模型", action: app.restart).disabled(checking || !ready)
-                    Button(checking ? "正在检测…" : "检测全部") { app.probeModel(nil) }.disabled(!ready || checking).buttonStyle(.borderedProminent).tint(accent)
+                    Button { app.probeModel(nil) } label: {
+                        HStack(spacing: 6) {
+                            if checking { ProgressView().controlSize(.small) }
+                            Text(checking ? "正在检测…" : "检测全部")
+                        }
+                    }.disabled(!ready || checking).buttonStyle(.borderedProminent).tint(accent)
                 }
                 HStack(spacing: 10) {
                     if !ready && app.status["phase"] as? String != "error" { ProgressView().controlSize(.small) }
@@ -228,7 +246,7 @@ struct Dashboard: View {
                 }.padding(12).background(accent.opacity(0.07)).cornerRadius(9)
                 HStack(spacing: 22) {
                     metric("已发现", models.count)
-                    metric("最近可用", models.filter { label($0["id"] as? String ?? "") == "最近可用" }.count)
+                    metric("可用", models.filter { label($0["id"] as? String ?? "") == "可用" }.count)
                     metric("待检测", models.filter { rank($0) == 1 }.count)
                     Spacer()
                     TextField("搜索名称或模型 ID", text: $search).textFieldStyle(.roundedBorder).frame(width: 210)
@@ -239,7 +257,10 @@ struct Dashboard: View {
                             let id = model["id"] as? String ?? ""
                             Button { selected = id } label: {
                                 HStack(spacing: 14) {
-                                    Image(systemName: "cube.transparent").font(.title2).foregroundColor(accent)
+                                    Group {
+                                        if pending(id) { ProgressView().controlSize(.small) }
+                                        else { Image(systemName: "cube.transparent").font(.title2).foregroundColor(accent) }
+                                    }.frame(width: 26, height: 26)
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text("OC · " + (model["name"] as? String ?? id)).font(.system(size: 14, weight: .medium)).foregroundColor(.primary)
                                         Text(responseTime(id)).font(.caption).monospacedDigit().foregroundColor(.secondary)
@@ -252,7 +273,7 @@ struct Dashboard: View {
                     }
                     if models.isEmpty { Text("正在安装或扫描模型，完成后将在这里显示。").foregroundColor(.secondary).padding(.vertical, 50) }
                 }
-                if let id = selected {
+                if let id = selected, models.contains(where: { $0["id"] as? String == id }) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(id).font(.system(size: 12, weight: .medium, design: .monospaced)).textSelection(.enabled)

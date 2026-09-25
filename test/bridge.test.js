@@ -231,3 +231,16 @@ test('short client IDs display once, route to upstream IDs and preserve manual c
   const legacy = [{ id: models[0].id, buddyBridgeOwner: OWNER }];
   assert.deepEqual(mergeModels(legacy, models, 'local', 'key'), entries);
 });
+
+
+test('discovery preserves provider names for existing and newly added models', () => {
+  const entry = name => ({ name, cost: { input: 0, output: 0 }, capabilities: { toolcall: true } });
+  const discovered = freeModels({ all: [{ id: 'opencode', models: {
+    'mimo-v2.6-flash-free': entry('MiMo-V2.6-Flash'),
+    'future-model-free': entry('Future Model Preview'),
+    'no-name': entry(undefined),
+  } }] });
+  assert.equal(discovered.find(m => m.id.endsWith('/mimo-v2.6-flash-free')).name, 'MiMo-V2.6-Flash');
+  assert.equal(discovered.find(m => m.id.endsWith('/future-model-free')).name, 'Future Model Preview');
+  assert.equal(discovered.find(m => m.id.endsWith('/no-name')).name, 'no-name');
+});

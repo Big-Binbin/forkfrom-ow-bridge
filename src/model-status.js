@@ -11,16 +11,4 @@ export function modelResult(ok, message = '', status, code) {
   return { ok, category, time: new Date().toISOString(), ...(message ? { error: message } : {}), ...(status ? { status } : {}), ...(code ? { code } : {}) };
 }
 
-export function displayName(id, original) {
-  return {
-    'mimo-v2.6-flash-free': 'MiMo Flash',
-    'space-bunny-free': 'Space Bunny',
-    'ling-3.0-flash-fin-free': 'Ling Flash',
-    'big-pickle': 'Big Pickle',
-    'muse-spark-1.3-contributor-free': 'Muse Spark',
-    'nemotron-3-ultra-free': 'Nemotron Ultra',
-    'nemotron-3.5-lightning-free': 'Nemotron Lightning',
-  }[id] || original;
-}
-
 export function clientModelID(model) { return `OC · ${model.name}`; }

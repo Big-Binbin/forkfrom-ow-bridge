@@ -1,5 +1,4 @@
 import { BridgeError, decode, completion } from './protocol.js';
-import { displayName } from './model-status.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Keep official approval gates active. No native operation is ever approved.
@@ -12,7 +11,7 @@ export function freeModels(providers) {
     const c = m.cost;
     return c && c.input === 0 && c.output === 0 && (c.cache?.read ?? 0) === 0 && (c.cache?.write ?? 0) === 0
       && m.capabilities?.toolcall === true && m.capabilities?.output?.text !== false && m.status !== 'deprecated';
-  }).map(([id, m]) => ({ id: `opencode/${id}`, name: displayName(id, m.name || id), context: m.limit?.context, output: m.limit?.output }))
+  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.context, output: m.limit?.output }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 

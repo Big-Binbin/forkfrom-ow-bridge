@@ -29,7 +29,7 @@ const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: previous.models || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
+let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -67,34 +67,37 @@ async function record(model, ok, error, status, code, durationMs, source = 'requ
 }
 let probing = false;
 const probeAbort = new AbortController();
-function startProbes(modelID) {
+function startProbes(modelID, reveal = false) {
   if (probing) return { started: false, message: '检测正在进行' };
   const selected = modelID ? models.filter(m => m.id === modelID) : models;
   if (!selected.length) throw new Error('模型不在当前目录中');
   probing = true;
+  const pending = selected.map(model => model.id);
   (async () => {
     try {
       for (const model of selected) {
         if (stopping) break;
-        update({ probe: { running: true, current: model.id } });
+        update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
         try {
           await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }], tool_choice: 'none' }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
         } catch (e) { if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe'); }
+        pending.shift();
+        update({ probe: { running: true, pending: [...pending] } });
       }
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));
   return { started: true };
 }
 
-async function refresh() {
+async function refresh(reveal = false) {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     const discovered = await runtime.backend.models();
     models = discovered;
     const sync = await syncPublished();
-    update({ phase: 'ready', message: sync.error ? `代理已启动；模型同步失败：${sync.error}` : `运行中 · ${models.length} 个免费模型`, models, sync });
+    update({ phase: 'ready', message: sync.error ? `代理已启动；模型同步失败：${sync.error}` : `运行中 · ${models.length} 个免费模型`, ...(reveal ? {} : { models }), sync });
     return { models, sync };
   })();
   try { return await refreshing; }
@@ -129,7 +132,7 @@ try {
   server = createServer({ key, backend: runtime.backend, getModels: publishedModels, refresh,
     status: () => state, probe: startProbes, onResult: record });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-  await refresh();
-  startProbes();
+  await refresh(true);
+  startProbes(undefined, true);
   console.log(`Buddy Bridge ready at ${endpoint}; ${models.length} free models`);
 } catch (e) { update({ phase: 'error', message: e.message }); await shutdown(1); }
