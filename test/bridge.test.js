@@ -17,7 +17,7 @@ test('message history preserves roles and tool result IDs, rejects image loss', 
   const messages = [...body.messages, { role: 'assistant', content: null, tool_calls: [{ id: 'call_a', type: 'function', function: { name: 'write_file', arguments: '{"path":"a"}' } }] }, { role: 'tool', tool_call_id: 'call_a', content: 'done' }];
   const request = prepare({ ...body, messages }, models);
   assert.equal(JSON.parse(request.text)[2].tool_call_id, 'call_a');
-  assert.throws(() => prepare({ ...body, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }] }, models), /text only/);
+  assert.throws(() => prepare({ ...body, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }] }, models), /does not declare image input/);
 });
 test('tool calls validated; none, forced and required are enforced', () => {
   const call = JSON.stringify({ content: '', calls: [{ name: 'write_file', arguments: { path: 'x' } }] });
@@ -315,5 +315,53 @@ test('reasoning selection reaches OpenCode for tool and plain chat requests', as
     const model = { ...models[0], chatOnly, reasoning: true, variants: { deep: { reasoningEffort: 'high' } } };
     await backend.complete(prepare({ model: model.id, messages: body.messages, reasoning: { effort: 'high' } }, [model]));
     assert.equal(sent.variant, 'deep');
+  }
+});
+
+test('catalog capabilities and separate input/context limits drive import', () => {
+  const discovered = freeModels({ all: [{ id: 'opencode', models: {
+    vision: { name: 'Vision', cost: { input: 0, output: 0 }, limit: { context: 1000, input: 700, output: 300 }, capabilities: { input: { image: true } } },
+    text: { cost: { input: 0, output: 0 }, limit: { context: 2000, output: 500 } },
+  } }] });
+  const vision = discovered.find(m => m.images);
+  assert.equal(vision.context, 1000);
+  assert.equal(vision.input, 700);
+  const entries = mergeModels([], discovered, 'local', 'key');
+  assert.equal(entries.find(m => m.name === 'OC · Vision').supportsImages, true);
+  assert.equal(entries.find(m => m.name === 'OC · Vision').maxInputTokens, 700);
+  assert.equal(entries.find(m => m.name === 'OC · text').maxInputTokens, 2000);
+  assert.equal(entries.find(m => m.name === 'OC · text').supportsImages, false);
+});
+
+test('image attachments preserve history mapping in both tool and chat paths', async () => {
+  const url = 'data:image/png;base64,iVBORw0KGgo=';
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'First' }, { type: 'image_url', image_url: { url } }] },
+    { role: 'assistant', content: 'Seen' },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url } }, { type: 'text', text: 'Compare' }] },
+  ];
+  const backend = new Backend('http://unused', 'test');
+  let sent;
+  backend.request = async (route, method, data) => {
+    if (route === '/session') return { id: 'vision' };
+    if (route === '/permission') return [];
+    if (route.endsWith('/message')) {
+      sent = data;
+      return { info: {}, parts: [{ type: 'text', text: data.agent === 'buddy-chat' ? 'OK' : '{"content":"OK","calls":[]}' }] };
+    }
+    return true;
+  };
+  for (const chatOnly of [true, false]) {
+    const request = prepare({ model: models[0].id, messages }, [{ ...models[0], images: true, chatOnly }]);
+    assert.equal(request.text.includes('base64'), false);
+    assert.match(JSON.parse(request.text)[0].content, /message-1-image-2.png/);
+    assert.match(JSON.parse(request.text)[2].content, /message-3-image-1.png/);
+    await backend.complete(request);
+    assert.deepEqual(sent.parts.slice(1), request.images);
+    assert.equal(sent.parts[1].url, url);
+    assert.match(sent.system, /Match each attachment filename/);
+  }
+  for (const bad of ['file:///etc/passwd', 'https://example.com/a.png', 'data:text/plain;base64,aGk=', 'data:image/png;base64,@@@']) {
+    assert.throws(() => prepare({ model: models[0].id, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: bad } }] }] }, [{ ...models[0], images: true }]), /base64 data URLs/);
   }
 });

@@ -20,9 +20,9 @@ export function mergeModels(document, models, endpoint, key, { allowEmpty = fals
   const conflicts = new Set(kept.map(m => m.id));
   const entries = models.filter(m => !conflicts.has(m.id) && !conflicts.has(clientModelID(m))).map(m => ({
     id: clientModelID(m), name: clientModelID(m), vendor: 'Custom', url: endpoint, apiKey: key,
-    supportsToolCall: !m.chatOnly, supportsImages: false, ...workBuddyReasoning(m),
+    supportsToolCall: !m.chatOnly, supportsImages: m.images === true, ...workBuddyReasoning(m),
     buddyBridgeOwner: OWNER,
-    ...(m.context ? { maxInputTokens: m.context } : {}),
+    ...((m.input ?? m.context) ? { maxInputTokens: m.input ?? m.context } : {}),
     ...(m.output ? { maxOutputTokens: m.output } : {}),
   }));
   const combined = [...kept, ...entries];

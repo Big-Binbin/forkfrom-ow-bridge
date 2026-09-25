@@ -26,7 +26,7 @@ WorkBuddy 的历史消息、工具定义、工具结果发送给 OpenCode 专用
 ## 当前范围
 
 - macOS 当前架构构建；此处产物为 Apple Silicon，macOS 13+。
-- 文本消息、工具调用和 SSE；不支持图片、Responses API、Anthropic Messages API。
+- 文本消息、图片输入、工具调用和 SSE；不支持 Responses API、Anthropic Messages API。图片接受 PNG/JPEG/WebP/GIF 的 base64 data URL，暂不接受远程图片链接或本地文件路径；整个请求上限仍为 8 MB。
 - SSE 在完整回复校验后输出，有等待心跳；不是逐 token 实时显示。
 - 任意复杂 WorkBuddy 工作流的兼容性仍需实际验证。`temperature`、`max_tokens` 等生成参数当前不透传。
 - 免费模型和额度由上游控制。目录中的零价格不保证持续免费或随时可用。
@@ -77,4 +77,4 @@ WorkBuddy 使用与名称相同的短模型 ID（`OC · ` 加 OpenCode 目录原
 
 控制面板的“使用系统代理”开关默认关闭，选择保存在应用 settings.json。开启后读取 macOS 的 HTTP/HTTPS 代理，供 OpenCode 目录刷新和模型请求使用；本地连接始终绕过代理。切换会重新读取并检测，不改 WorkBuddy 配置。当前支持静态 HTTP/HTTPS 系统代理；仅 SOCKS 或 PAC 配置会明确报错。关闭表示应用不主动使用系统代理，不能绕过 VPN 的 TUN 接管。
 
-检测时使用无副作用的模拟工具调用，校验工具名称与随机参数；不兼容时再检测普通文字对话。只通过文字检测的模型标为“可用 · 仅对话”，与其他可用模型一起导入，自动设置 supportsToolCall=false；工具检测通过时设置 true。不再需要单独手动导入。图片输入仍自动关闭。扫描同时保存 OpenCode 声明的推理能力和 variants，详情中显示；仅有可映射 reasoningEffort 档位的模型向 WorkBuddy 开放推理调节，并填写 supportedEfforts。没有显式 none 档位时不提供关闭推理；未提供档位的推理模型使用 OpenCode 默认模式，不在 WorkBuddy 展示调节开关。WorkBuddy 默认档位优先 medium，否则采用目录中的首个可用档位；API 未指定档位时仍使用 OpenCode 默认值。请求中的 reasoning_effort 或 reasoning.effort 会映射为 OpenCode variant，不支持的档位返回 400。档位来自目录声明，不代表每档都已实测，也不转发思考过程文本。输入输出上限来自 OpenCode 目录，输入优先使用 limit.input，否则使用 limit.context。能力配置在导入时统一更新，重新检测仍不直接修改 WorkBuddy。
+检测时使用无副作用的模拟工具调用，校验工具名称与随机参数；不兼容时再检测普通文字对话。只通过文字检测的模型标为“可用 · 仅对话”，与其他可用模型一起导入，自动设置 supportsToolCall=false；工具检测通过时设置 true。不再需要单独手动导入。图片输入按 capabilities.input.image 声明自动填写 supportsImages；图片转换为 OpenCode file parts，保留它在历史消息中的位置标记，不调用原生读取工具。扫描同时保存 OpenCode 声明的推理能力和 variants，详情中显示；仅有可映射 reasoningEffort 档位的模型向 WorkBuddy 开放推理调节，并填写 supportedEfforts。没有显式 none 档位时不提供关闭推理；未提供档位的推理模型使用 OpenCode 默认模式，不在 WorkBuddy 展示调节开关。WorkBuddy 默认档位优先 medium，否则采用目录中的首个可用档位；API 未指定档位时仍使用 OpenCode 默认值。请求中的 reasoning_effort 或 reasoning.effort 会映射为 OpenCode variant，不支持的档位返回 400。档位来自目录声明，不代表每档都已实测，也不转发思考过程文本。输入、输出和上下文分别保存 OpenCode 的 limit.input、limit.output、limit.context，界面不把上下文冒充独立输入上限。导入 WorkBuddy 时 maxInputTokens 优先使用 limit.input，未单独声明则按其上下文配置语义回退 limit.context；maxOutputTokens 使用 limit.output。能力配置在导入时统一更新，重新检测仍不直接修改 WorkBuddy。

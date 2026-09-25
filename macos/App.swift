@@ -350,6 +350,17 @@ struct Dashboard: View {
                         }
                         if let model = models.first(where: { $0["id"] as? String == id }) {
                             let variants = model["variants"] as? [String: Any] ?? [:]
+                            Text("图片输入：" + (model["images"] as? Bool == true ? "支持" : "不支持"))
+                                .font(.caption).foregroundColor(.secondary)
+                            let context = model["context"] as? Int
+                            let input = model["input"] as? Int
+                            let output = model["output"] as? Int
+                            let contextText = context.map { String($0) } ?? "未声明"
+                            let inputText = input.map { String($0) } ?? "未单独声明"
+                            let outputText = output.map { String($0) } ?? "未声明"
+                            Text("上下文：\(contextText) · 输入上限：\(inputText) · 输出上限：\(outputText)")
+                                .font(.caption).foregroundColor(.secondary)
+
                             Text(model["reasoning"] as? Bool == true ? "推理：支持 · " + (variants.isEmpty ? "使用默认模式" : "可选档位：" + variants.keys.sorted().joined(separator: " / ")) : "推理：OpenCode 未声明支持")
                                 .font(.caption).foregroundColor(.secondary).textSelection(.enabled)
                         }

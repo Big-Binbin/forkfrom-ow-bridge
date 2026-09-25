@@ -11,7 +11,7 @@ export function freeModels(providers) {
     const c = m.cost;
     return c && c.input === 0 && c.output === 0 && (c.cache?.read ?? 0) === 0 && (c.cache?.write ?? 0) === 0
       && m.capabilities?.output?.text !== false && m.status !== 'deprecated';
-  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.input ?? m.limit?.context, output: m.limit?.output, toolcall: m.capabilities?.toolcall === true, reasoning: m.capabilities?.reasoning === true, variants: m.variants ?? {} }))
+  }).map(([id, m]) => ({ id: `opencode/${id}`, name: m.name || id, context: m.limit?.context, input: m.limit?.input, images: m.capabilities?.input?.image === true, output: m.limit?.output, toolcall: m.capabilities?.toolcall === true, reasoning: m.capabilities?.reasoning === true, variants: m.variants ?? {} }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -74,7 +74,7 @@ export class Backend {
           type: 'object', properties: { content: { type: 'string' }, calls: callsSchema },
           required: ['content', 'calls'], additionalProperties: false,
         } } }),
-        parts: [{ type: 'text', text: request.text }],
+        parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
       }, signal)]);
       if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
         const error = response.info.error;
