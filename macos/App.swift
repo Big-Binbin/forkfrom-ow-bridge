@@ -100,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             add(menu, "最近请求失败：\((result["error"] as? String ?? "未知错误").prefix(70))", nil)
         }
         menu.addItem(.separator())
-        add(menu, "重新同步模型到 WorkBuddy", #selector(refreshModels))
+        add(menu, "导入 WorkBuddy", #selector(importModels))
         let modelsMenu = NSMenu()
         let results = status["modelResults"] as? [String: [String: Any]] ?? [:]
         for model in status["models"] as? [[String: Any]] ?? [] {
@@ -113,21 +113,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         menu.addItem(.separator())
         add(menu, "打开 WorkBuddy", #selector(openWorkBuddy))
         add(menu, "查看日志与状态文件", #selector(openLogs))
-        add(menu, "重启代理并刷新免费模型", #selector(restart))
+        add(menu, "读取免费模型", #selector(refreshModels))
         add(menu, "退出", #selector(quit))
         item.menu = menu
     }
-    @objc func refreshModels() {
+    @objc func refreshModels() { modelAction("refresh") }
+    @objc func importModels() { modelAction("import") }
+    func modelAction(_ action: String) {
         guard let key = try? String(contentsOf: dataURL.appendingPathComponent("api-key"), encoding: .utf8) else { return }
         let endpoint = status["endpoint"] as? String ?? "http://127.0.0.1:41980/v1"
         let base = String(endpoint.dropLast(3))
-        guard let url = URL(string: base + "/admin/refresh") else { return }
-        var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 60
+        guard let url = URL(string: base + "/admin/" + action) else { return }
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 150
         request.setValue("Bearer \(key.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             DispatchQueue.main.async {
                 if error != nil || (response as? HTTPURLResponse)?.statusCode != 200 {
-                    let alert = NSAlert(); alert.messageText = "模型刷新失败"; alert.informativeText = error?.localizedDescription ?? "请查看日志，原有配置已保留。"; alert.runModal()
+                    let alert = NSAlert(); alert.messageText = action == "import" ? "模型导入失败" : "模型读取失败"; alert.informativeText = error?.localizedDescription ?? "请查看日志，原有配置已保留。"; alert.runModal()
                 }
                 self?.refreshMenu()
             }
@@ -158,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 }
 struct Dashboard: View {
     @ObservedObject var app: AppDelegate
-    @State private var search = ""
     @State private var selected: String?
     var models: [[String: Any]] { app.status["models"] as? [[String: Any]] ?? [] }
     var results: [String: [String: Any]] { app.status["modelResults"] as? [String: [String: Any]] ?? [:] }
@@ -182,7 +183,7 @@ struct Dashboard: View {
         return results[id]?["ok"] as? Bool == false ? 2 : 1
     }
     var orderedModels: [[String: Any]] {
-        models.filter { search.isEmpty || "\($0["name"] ?? "") \($0["id"] ?? "")".localizedCaseInsensitiveContains(search) }.sorted {
+        models.sorted {
             if rank($0) != rank($1) { return rank($0) < rank($1) }
             return ($0["name"] as? String ?? "").localizedCaseInsensitiveCompare($1["name"] as? String ?? "") == .orderedAscending
         }
@@ -229,7 +230,7 @@ struct Dashboard: View {
                         Text("自动发现，保留每一个模型的状态。").foregroundColor(.secondary)
                     }
                     Spacer()
-                    Button("读取免费模型", action: app.restart).disabled(checking || !ready)
+                    Button("读取免费模型", action: app.refreshModels).disabled(checking || !ready)
                     Button { app.probeModel(nil) } label: {
                         HStack(spacing: 6) {
                             if checking { ProgressView().controlSize(.small) }
@@ -249,7 +250,7 @@ struct Dashboard: View {
                     metric("可用", models.filter { label($0["id"] as? String ?? "") == "可用" }.count)
                     metric("待检测", models.filter { rank($0) == 1 }.count)
                     Spacer()
-                    TextField("搜索名称或模型 ID", text: $search).textFieldStyle(.roundedBorder).frame(width: 210)
+                    Button("导入 WorkBuddy", action: app.importModels).disabled(!ready || checking)
                 }
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -284,7 +285,7 @@ struct Dashboard: View {
                     }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
                 }
                 let sync = app.status["sync"] as? [String: Any]
-                Text(sync?["error"] as? String ?? (ready ? "仅检测通过的模型同步到 WorkBuddy · 选择 OC · 开头的模型" : "准备完成后将自动同步到 WorkBuddy"))
+                Text(sync?["error"] as? String ?? (sync?["time"] != nil ? "已导入 \(sync?["count"] as? Int ?? 0) 个模型 · 再次检测后需点击导入 WorkBuddy 更新" : "首次读取和检测完成后自动导入 WorkBuddy"))
                     .font(.caption).foregroundColor(sync?["error"] != nil ? .orange : .secondary)
                 Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)

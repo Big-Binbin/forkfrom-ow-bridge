@@ -26,7 +26,7 @@ let key;
 try { key = (await fs.readFile(tokenFile, 'utf8')).trim(); }
 catch (e) { if (e.code !== 'ENOENT') throw e; key = randomBytes(32).toString('hex'); await fs.writeFile(tokenFile, key, { flag: 'wx', mode: 0o600 }); }
 const endpoint = `http://127.0.0.1:${port}/v1`;
-let models = [], server, runtime, stopping = false, refreshing;
+let models = [], server, runtime, binary, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
 let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
@@ -45,35 +45,36 @@ const publishedModels = () => models.filter(m => validated.has(m.id) && state.mo
 let syncWrites = Promise.resolve();
 const modelsFile = process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 
-function syncPublished() {
+function syncPublished(published = publishedModels()) {
   syncWrites = syncWrites.then(async () => {
-    const published = publishedModels();
     let sync;
     if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
     else {
       try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true }); }
       catch (e) { sync = { error: e.message }; }
     }
-    update({ sync, availableModels: published.map(m => m.id) });
+    update({ sync: { ...sync, time: new Date().toISOString() } });
     return sync;
   });
   return syncWrites;
 }
 async function record(model, ok, error, status, code, durationMs, source = 'request') {
+  if (stopping) return;
   const result = { model, ...modelResult(ok, error, status, code), durationMs, source };
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
-  await syncPublished();
+  update({ availableModels: publishedModels().map(m => m.id) });
 }
-let probing = false;
+let probing = false, probeTask;
 const probeAbort = new AbortController();
-function startProbes(modelID, reveal = false) {
+function startProbes(modelID, reveal = false, autoImport = false) {
+  if (stopping || refreshing) throw new Error('请等待模型读取完成');
   if (probing) return { started: false, message: '检测正在进行' };
   const selected = modelID ? models.filter(m => m.id === modelID) : models;
   if (!selected.length) throw new Error('模型不在当前目录中');
   probing = true;
   const pending = selected.map(model => model.id);
-  (async () => {
+  probeTask = (async () => {
     try {
       for (const model of selected) {
         if (stopping) break;
@@ -86,22 +87,57 @@ function startProbes(modelID, reveal = false) {
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }
+      if (autoImport && !stopping) await syncPublished();
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));
   return { started: true };
 }
 
-async function refresh(reveal = false) {
+function watchRuntime(current) {
+  current.child.on('exit', () => {
+    if (!stopping && runtime === current) {
+      update({ phase: 'error', message: 'OpenCode 服务退出，请重启代理' });
+      shutdown(1);
+    }
+  });
+}
+
+async function refresh(restartRuntime = false) {
   if (refreshing) return refreshing;
+  if (probing || stopping) throw new Error('请等待检测完成');
+  validated.clear();
+  models = [];
+  update({ phase: 'reading', message: '正在读取免费模型…', models: [], availableModels: [] });
   refreshing = (async () => {
+    if (restartRuntime) {
+      const next = await startBackend(binary, dataDir, log);
+      if (stopping) { await next.stop(); return; }
+      const old = runtime;
+      runtime = next;
+      watchRuntime(next);
+      await old.stop();
+    }
     const discovered = await runtime.backend.models();
+    if (stopping) return;
     models = discovered;
-    const sync = await syncPublished();
-    update({ phase: 'ready', message: sync.error ? `代理已启动；模型同步失败：${sync.error}` : `运行中 · ${models.length} 个免费模型`, ...(reveal ? {} : { models }), sync });
-    return { models, sync };
+    update({ phase: 'ready', message: `运行中 · ${models.length} 个免费模型` });
+    return { count: models.length };
   })();
   try { return await refreshing; }
+  catch (e) { if (!stopping) update({ phase: 'error', message: `读取失败：${e.message}` }); throw e; }
   finally { refreshing = null; }
+}
+
+async function readModels() {
+  const result = await refresh(true);
+  if (!stopping) startProbes(undefined, true);
+  return result;
+}
+async function importModels() {
+  if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
+  const sync = await syncPublished();
+  if (sync.error) throw new Error(sync.error);
+  return sync;
 }
 
 async function shutdown(code = 0) {
@@ -109,7 +145,10 @@ async function shutdown(code = 0) {
   stopping = true;
   probeAbort.abort();
   server?.abortAll(); server?.closeAllConnections(); server?.close();
+  await syncPublished([]);
   await runtime?.stop();
+  await refreshing?.catch(() => {});
+  await probeTask;
   if (code === 0) update({ phase: 'stopped', message: '已停止' });
   await syncWrites;
   await statusWrites;
@@ -121,18 +160,18 @@ process.on('uncaughtException', e => { update({ phase: 'error', message: e.messa
 process.on('unhandledRejection', e => { update({ phase: 'error', message: String(e?.message || e) }); shutdown(1); });
 try {
   update({ phase: 'starting' });
-  await syncPublished();
-  const binary = await findRuntime(dataDir, message => update({ message }));
+  await syncPublished([]);
+  binary = await findRuntime(dataDir, message => update({ message }));
   update({ message: '正在启动隔离模型服务' });
   runtime = await startBackend(binary, dataDir, log);
-  runtime.child.on('exit', () => { if (!stopping) { update({ phase: 'error', message: 'OpenCode 服务退出，请重启代理' }); shutdown(1); } });
+  watchRuntime(runtime);
   // Confirm this runtime has the dedicated agent, not a user's build agent.
   const agents = await runtime.backend.request('/agent');
   if (!agents.some(a => a.name === 'buddy-bridge')) throw new Error('Dedicated approval-gated agent missing');
-  server = createServer({ key, backend: runtime.backend, getModels: publishedModels, refresh,
+  server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels,
     status: () => state, probe: startProbes, onResult: record });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-  await refresh(true);
-  startProbes(undefined, true);
+  await refresh();
+  startProbes(undefined, true, true);
   console.log(`Buddy Bridge ready at ${endpoint}; ${models.length} free models`);
 } catch (e) { update({ phase: 'error', message: e.message }); await shutdown(1); }

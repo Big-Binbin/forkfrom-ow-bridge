@@ -1,0 +1,71 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { OWNER } from '../src/sync.js';
+
+test('startup imports once; repeated checks and reads require import; exit removes owned models', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'buddy-lifecycle-'));
+  const config = path.join(root, 'models.json');
+  const manual = { id: 'personal', apiKey: 'keep' };
+  await fs.writeFile(config, JSON.stringify([manual, { id: 'old-owned', buddyBridgeOwner: OWNER }]));
+  const catalog = { models: [{ id: 'opencode/a', name: 'A' }, { id: 'opencode/b', name: 'B' }], failed: [] };
+  const writeCatalog = () => fs.writeFile(path.join(root, 'catalog.json'), JSON.stringify(catalog));
+  await writeCatalog();
+  const socket = net.createServer();
+  await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
+  const port = socket.address().port;
+  await new Promise(resolve => socket.close(resolve));
+  const child = spawn(process.execPath, ['--loader', fileURLToPath(new URL('./fixtures/runtime-loader.mjs', import.meta.url)), 'src/main.js'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    env: { ...process.env, BUDDY_DATA_DIR: root, BUDDY_PORT: String(port), BUDDY_MODELS_FILE: config, BUDDY_NO_SYNC: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let logs = ''; child.stdout.on('data', x => logs += x); child.stderr.on('data', x => logs += x);
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  async function waitFor(predicate) {
+    for (let i = 0; i < 300; i++) {
+      let state;
+      try { state = JSON.parse(await fs.readFile(path.join(root, 'status.json'), 'utf8')); } catch {}
+      if (state && predicate(state)) return state;
+      if (child.exitCode !== null) throw new Error(logs);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw new Error('Lifecycle timeout: ' + logs);
+  }
+  try {
+    await waitFor(s => s.probe.running);
+    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Startup clears old owned entries before detection');
+    await waitFor(s => s.phase === 'ready' && !s.probe.running);
+    const initial = await fs.readFile(config, 'utf8');
+    const backups = async () => (await fs.readdir(root)).filter(name => name.endsWith('.bak')).length;
+    assert.equal(await backups(), 2, 'One startup cleanup and one import after the full batch');
+    assert.deepEqual(JSON.parse(initial).map(m => m.id), ['personal', 'OC · A', 'OC · B']);
+    const key = (await fs.readFile(path.join(root, 'api-key'), 'utf8')).trim();
+    async function post(route) {
+      const response = await fetch(`http://127.0.0.1:${port}/admin/${route}`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: '{}' });
+      assert.ok(response.ok, await response.text());
+    }
+    catalog.failed = ['opencode/b']; await writeCatalog();
+    await post('probe');
+    await waitFor(s => !s.probe.running && s.modelResults['opencode/b']?.ok === false);
+    assert.equal(await fs.readFile(config, 'utf8'), initial, 'Manual detection never writes WorkBuddy');
+    await post('refresh');
+    await waitFor(s => s.probe.running);
+    await waitFor(s => s.phase === 'ready' && !s.probe.running && s.models.length === 2);
+    assert.equal(await fs.readFile(config, 'utf8'), initial, 'Manual reading never writes WorkBuddy');
+    assert.equal(await backups(), 2, 'Repeated checks and reads produce no config writes');
+    await post('import');
+    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')).map(m => m.id), ['personal', 'OC · A']);
+    await post('probe');
+    await waitFor(s => s.probe.running);
+    child.kill('SIGTERM'); await exited;
+    assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')), [manual], 'Exit removes only owned entries');
+  } finally {
+    if (child.exitCode === null) { child.kill('SIGTERM'); await exited; }
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
