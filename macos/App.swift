@@ -165,7 +165,7 @@ struct Dashboard: View {
         if checking && probe["current"] as? String == id { return "检测中" }
         guard let r = results[id] else { return "未检测" }
         switch r["category"] as? String {
-        case "available": return "最近可用"
+        case "available": return (app.status["availableModels"] as? [String] ?? []).contains(id) ? "最近可用" : "待复测"
         case "quota": return "额度不足"
         case "rate_limit": return "请求限流"
         case "access": return "访问受限"
@@ -256,9 +256,9 @@ struct Dashboard: View {
                     }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(9)
                 }
                 let sync = app.status["sync"] as? [String: Any]
-                Text(sync?["error"] as? String ?? (ready ? "已同步到 WorkBuddy · 选择 OC · 开头的模型使用" : "准备完成后将自动同步到 WorkBuddy"))
+                Text(sync?["error"] as? String ?? (ready ? "仅检测通过的模型同步到 WorkBuddy · 选择 OC · 开头的模型" : "准备完成后将自动同步到 WorkBuddy"))
                     .font(.caption).foregroundColor(sync?["error"] != nil ? .orange : .secondary)
-                Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。额度不足的模型仍保留；限流不等于额度耗尽，剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。").font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(minWidth: 880, minHeight: 620)
     }

@@ -10,8 +10,8 @@ export async function atomicWrite(file, text) {
   finally { await fs.unlink(temp).catch(() => {}); }
 }
 
-export function mergeModels(document, models, endpoint, key) {
-  if (!models.length) throw new Error('Empty model discovery; existing configuration preserved');
+export function mergeModels(document, models, endpoint, key, { allowEmpty = false } = {}) {
+  if (!models.length && !allowEmpty) throw new Error('Empty model discovery; existing configuration preserved');
   const list = Array.isArray(document) ? document : document?.models;
   if (!Array.isArray(list)) throw new Error('Unrecognized WorkBuddy models.json; left unchanged');
   const kept = list.filter(m => m.buddyBridgeOwner !== OWNER);
@@ -33,13 +33,13 @@ export function mergeModels(document, models, endpoint, key) {
   return updated;
 }
 
-export async function syncModels(file, models, endpoint, key) {
+export async function syncModels(file, models, endpoint, key, options = {}) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const lock = await fs.open(`${file}.buddy-bridge.lock`, 'wx', 0o600).catch(() => { throw new Error('Model sync already running; no changes made'); });
   try {
     const old = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
     const document = old === null ? [] : JSON.parse(old);
-    const merged = mergeModels(document, models, endpoint, key);
+    const merged = mergeModels(document, models, endpoint, key, options);
     if (JSON.stringify(merged) === JSON.stringify(document)) return { changed: false, count: models.length };
     const current = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
     if (current !== old) throw new Error('WorkBuddy configuration changed during sync; retry refresh');

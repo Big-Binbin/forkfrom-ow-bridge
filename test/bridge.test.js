@@ -166,3 +166,33 @@ test('quota, throttling, access and unknown errors remain distinct', async () =>
   const catalog = freeModels({ all: [{ id: 'opencode', models: { exhausted: { cost: { input: 0, output: 0 }, capabilities: { toolcall: true }, remaining: 0 } } }] });
   assert.equal(catalog.length, 1, 'An exhausted free model stays in the catalog');
 });
+
+test('withdrawing every managed model preserves user models and metadata', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'buddy-withdraw-'));
+  const file = path.join(root, 'models.json');
+  const old = { models: [{ id: 'personal' }, { id: models[0].id, buddyBridgeOwner: OWNER }], availableModels: ['personal', models[0].id], keep: true };
+  await fs.writeFile(file, JSON.stringify(old));
+  try {
+    await syncModels(file, [], 'local', 'key', { allowEmpty: true });
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { models: [{ id: 'personal' }], availableModels: ['personal'], keep: true });
+    await syncModels(file, models, 'local', 'key', { allowEmpty: true });
+    assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).models.length, 2);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('failed models disappear from API and cached callers cannot execute them', async () => {
+  let published = models, calls = 0, recorded = 0;
+  const server = createServer({ key: 'test', getModels: () => published,
+    backend: { complete: async () => { calls++; throw new Error('insufficient_quota'); } },
+    onResult: async (_, ok) => { assert.equal(ok, false); recorded++; published = []; }, status: () => ({}) });
+  const base = await listen(server);
+  const headers = { Authorization: 'Bearer test', 'Content-Type': 'application/json' };
+  const request = () => fetch(base + '/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify(body) });
+  try {
+    assert.equal((await request()).status, 502);
+    assert.deepEqual((await (await fetch(base + '/v1/models', { headers })).json()).data, []);
+    assert.equal((await request()).status, 400);
+    assert.equal(calls, 1); assert.equal(recorded, 1);
+    assert.equal(models.length, 1, 'UI discovery catalog is retained');
+  } finally { server.closeAllConnections(); server.close(); }
+});

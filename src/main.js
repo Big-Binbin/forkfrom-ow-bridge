@@ -29,7 +29,7 @@ const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: previous.models || [], modelResults: previous.modelResults || {}, sync: null, probe: { running: false } };
+let state = { phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.1.0', opencodeVersion: PINNED_VERSION, models: previous.models || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -40,11 +40,30 @@ function update(patch) {
 const logFile = path.join(dataDir, 'opencode.log');
 try { if ((await fs.stat(logFile)).size > 5 * 1024 * 1024) await fs.rename(logFile, logFile + '.previous'); } catch {}
 const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
+const validated = new Set();
+const publishedModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true);
+let syncWrites = Promise.resolve();
 const modelsFile = process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 
-function record(model, ok, error, status, code) {
+function syncPublished() {
+  syncWrites = syncWrites.then(async () => {
+    const published = publishedModels();
+    let sync;
+    if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
+    else {
+      try { sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true }); }
+      catch (e) { sync = { error: e.message }; }
+    }
+    update({ sync, availableModels: published.map(m => m.id) });
+    return sync;
+  });
+  return syncWrites;
+}
+async function record(model, ok, error, status, code) {
   const result = { model, ...modelResult(ok, error, status, code) };
+  if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
+  await syncPublished();
 }
 let probing = false;
 const probeAbort = new AbortController();
@@ -60,8 +79,8 @@ function startProbes(modelID) {
         update({ probe: { running: true, current: model.id } });
         try {
           await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }], tool_choice: 'none' }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
-          record(model.id, true);
-        } catch (e) { if (!stopping) record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code); }
+          await record(model.id, true);
+        } catch (e) { if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code); }
       }
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));
@@ -72,12 +91,8 @@ async function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     const discovered = await runtime.backend.models();
-    let sync;
-    if (process.env.BUDDY_NO_SYNC !== '1') {
-      try { sync = await syncModels(modelsFile, discovered, `${endpoint}/chat/completions`, key); }
-      catch (e) { sync = { error: e.message }; }
-    } else sync = { skipped: true };
     models = discovered;
+    const sync = await syncPublished();
     update({ phase: 'ready', message: sync.error ? `代理已启动；模型同步失败：${sync.error}` : `运行中 · ${models.length} 个免费模型`, models, sync });
     return { models, sync };
   })();
@@ -92,6 +107,7 @@ async function shutdown(code = 0) {
   server?.abortAll(); server?.closeAllConnections(); server?.close();
   await runtime?.stop();
   if (code === 0) update({ phase: 'stopped', message: '已停止' });
+  await syncWrites;
   await statusWrites;
   log.end(); await fs.unlink(lockFile).catch(() => {});
   process.exit(code);
@@ -101,6 +117,7 @@ process.on('uncaughtException', e => { update({ phase: 'error', message: e.messa
 process.on('unhandledRejection', e => { update({ phase: 'error', message: String(e?.message || e) }); shutdown(1); });
 try {
   update({ phase: 'starting' });
+  await syncPublished();
   const binary = await findRuntime(dataDir, message => update({ message }));
   update({ message: '正在启动隔离模型服务' });
   runtime = await startBackend(binary, dataDir, log);
@@ -108,7 +125,7 @@ try {
   // Confirm this runtime has the dedicated agent, not a user's build agent.
   const agents = await runtime.backend.request('/agent');
   if (!agents.some(a => a.name === 'buddy-bridge')) throw new Error('Dedicated approval-gated agent missing');
-  server = createServer({ key, backend: runtime.backend, getModels: () => models, refresh,
+  server = createServer({ key, backend: runtime.backend, getModels: publishedModels, refresh,
     status: () => state, probe: startProbes, onResult: record });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   await refresh();
