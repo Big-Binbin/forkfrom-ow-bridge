@@ -96,9 +96,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let menu = NSMenu()
         add(menu, "打开控制面板", #selector(showWindow))
         add(menu, status["message"] as? String ?? "正在启动…", nil)
-        if let result = status["lastRequest"] as? [String: Any], result["ok"] as? Bool == false {
-            add(menu, "最近请求失败：\((result["error"] as? String ?? "未知错误").prefix(70))", nil)
-        }
         menu.addItem(.separator())
         add(menu, "导入 WorkBuddy", #selector(importModels))
         let modelsMenu = NSMenu()
