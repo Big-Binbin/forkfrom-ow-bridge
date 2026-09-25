@@ -43,6 +43,8 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 
 输入上限优先读取 `limit.input`，缺少时 WorkBuddy 配置回退 `limit.context`；详情仍分别展示上下文与独立输入上限。输出上限读取 `limit.output`。
 
+结构化返回格式不合格时，在同一隔离会话内最多要求模型纠正一次，纠正前不向 WorkBuddy 发出工具调用；工具名/参数错误、原生工具活动和截断仍直接拒绝，两次请求共用原有超时预算。
+
 支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
 ## 验证

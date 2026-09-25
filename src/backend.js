@@ -35,6 +35,7 @@ export class Backend {
     return result;
   }
   async complete(request, signal) {
+    signal = AbortSignal.any([AbortSignal.timeout(this.timeout), ...(signal ? [signal] : [])]);
     // Native tools require approval; the bridge aborts any attempted native action.
     const session = await this.request('/session', 'POST', { title: 'Buddy Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
@@ -66,7 +67,7 @@ export class Backend {
           required: ['name', 'arguments'], additionalProperties: false,
         })) } } : { maxItems: 0, items: { type: 'object' } }),
       };
-      const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', {
+      const payload = {
         model: { providerID: 'opencode', modelID: request.model.id.slice('opencode/'.length) },
         ...(request.variant ? { variant: request.variant } : {}),
         agent: request.chatOnly ? 'buddy-chat' : 'buddy-bridge', system: request.chatOnly ? request.system : request.system + '\nUse StructuredOutput to return this envelope. All other native tools are forbidden; do not perform the external actions yourself.',
@@ -75,18 +76,27 @@ export class Backend {
           required: ['content', 'calls'], additionalProperties: false,
         } } }),
         parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
-      }, signal)]);
-      if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
-        const error = response.info.error;
-        throw new BridgeError(error.data?.message || error.message || error.name || 'Model request failed', error.data?.statusCode || 502, 'model_error');
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal)]);
+        if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
+          const error = response.info.error;
+          throw new BridgeError(error.data?.message || error.message || error.name || 'Model request failed', error.data?.statusCode || 502, 'model_error');
+        }
+        if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || p.tool !== 'StructuredOutput') && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
+        if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
+        const text = response.info?.structured !== undefined ? JSON.stringify(response.info.structured) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
+        if (request.chatOnly && !text.trim()) throw new BridgeError('Model returned no text', 502, 'empty_response');
+        let message;
+        try { message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request); }
+        catch (error) {
+          if (attempt || request.chatOnly || error.code !== 'invalid_model_output' || signal.aborted) throw error;
+          payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
+          continue;
+        }
+        successful = true;
+        return completion(request.model.id, message, response.info?.tokens);
       }
-      if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || p.tool !== 'StructuredOutput') && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
-      if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
-      const text = response.info?.structured !== undefined ? JSON.stringify(response.info.structured) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
-      if (request.chatOnly && !text.trim()) throw new BridgeError('Model returned no text', 502, 'empty_response');
-      const result = completion(request.model.id, request.chatOnly ? { role: 'assistant', content: text } : decode(text, request), response.info?.tokens);
-      successful = true;
-      return result;
     } finally {
       guard.abort();
       await watch.catch(() => {});

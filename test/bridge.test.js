@@ -395,3 +395,45 @@ test('image attachments preserve history mapping in both tool and chat paths', a
     assert.throws(() => prepare({ model: models[0].id, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: bad } }] }] }, [{ ...models[0], images: true }]), /base64 data URLs/);
   }
 });
+
+test('a malformed response envelope gets one format-only correction before tools are emitted', async () => {
+  const request = prepare(body, models);
+  const malformed = { content: null, calls: [{ name: 'write_file', arguments: { path: 'x' } }] };
+  assert.throws(() => decode(JSON.stringify(malformed), request), /Invalid model response envelope/);
+  const backend = new Backend('http://unused', 'test');
+  const sent = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: 'repair' };
+    if (route.endsWith('/message')) {
+      sent.push(payload);
+      return { info: { structured: sent.length === 1 ? malformed : { content: '', calls: malformed.calls } }, parts: [] };
+    }
+    return [];
+  };
+  const result = await backend.complete(request);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].format, sent[0].format);
+  assert.equal(sent[1].agent, 'buddy-bridge');
+  assert.match(sent[1].parts[0].text, /No external tool has been executed/);
+  assert.equal(result.choices[0].message.tool_calls.length, 1);
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+});
+
+test('format correction is bounded and never retries unsafe or invalid tool calls', async () => {
+  for (const kind of ['malformed', 'unlisted', 'native', 'truncated']) {
+    const backend = new Backend('http://unused', 'test');
+    let calls = 0;
+    backend.request = async route => {
+      if (route === '/session') return { id: 'bounded' };
+      if (route.endsWith('/message')) {
+        calls++;
+        if (kind === 'native') return { parts: [{ type: 'tool', tool: 'write' }] };
+        if (kind === 'truncated') return { info: { finish: 'length' }, parts: [] };
+        return { info: { structured: kind === 'malformed' ? {} : { content: '', calls: [{ name: 'unlisted', arguments: {} }] } }, parts: [] };
+      }
+      return [];
+    };
+    await assert.rejects(backend.complete(prepare(body, models)));
+    assert.equal(calls, kind === 'malformed' ? 2 : 1);
+  }
+});
