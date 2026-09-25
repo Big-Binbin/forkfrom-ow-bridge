@@ -136,7 +136,19 @@ else {
     app.setPath('userData', dataDir);
     ipcMain.handle('action', async (event, name, value) => {
       if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('拒绝未知来源');
-      try { return { ok: true, result: await action(name, value) }; } catch (error) { return { ok: false, error: error.message }; }
+      try {
+        const result = await action(name, value);
+        if (name === 'import' && !result.canceled) await dialog.showMessageBox(window, {
+          type: 'info', title: 'Buddy Bridge', message: result.changed === false ? '配置已是最新' : '导入完成',
+          detail: importMessage(result), buttons: ['确定'], defaultId: 0, cancelId: 0,
+        });
+        return { ok: true, result };
+      } catch (error) {
+        if (name === 'import') await dialog.showMessageBox(window, {
+          type: 'error', title: 'Buddy Bridge', message: '导入失败', detail: error.message, buttons: ['确定'], defaultId: 0, cancelId: 0,
+        });
+        return { ok: false, error: error.message };
+      }
     });
     const trayIcon = nativeImage.createFromPath(path.join(__dirname, process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png'));
     if (process.platform === 'darwin') trayIcon.setTemplateImage(true);
