@@ -28,7 +28,7 @@ export function shrinkPermission(value, limit = 400) {
 
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
-    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null });
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map() });
   }
   headers() {
     return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
@@ -99,6 +99,13 @@ export class Backend {
   }
   handleEvent(wrapper) {
     const event = wrapper?.payload ?? wrapper;
+    // The tool part carries the name and arguments of a call that an approval gate blocked.
+    // It arrives here before the approval does, and the HTTP listing of messages does not.
+    const part = event?.type === 'message.part.updated' ? event.properties?.part : undefined;
+    if (part?.type === 'tool' && part.callID) {
+      this.toolParts.set(part.callID, { tool: part.tool, input: part.state?.input ?? {} });
+      if (this.toolParts.size > 50) this.toolParts.delete(this.toolParts.keys().next().value);
+    }
     const sessionID = event?.properties?.sessionID;
     const meta = sessionID ? this.active.get(sessionID) : undefined;
     if (!meta || typeof meta.activity !== 'function') return;
@@ -117,24 +124,15 @@ export class Backend {
   reject(permission, message, signal) {
     return this.request(`/permission/${encodeURIComponent(permission.id)}/reply`, 'POST', { reply: 'reject', message }, signal, 5000);
   }
-  // An approval request carries a call ID, not the arguments: read them back from the part.
-  // Failures are reported instead of swallowed, because "why was this not handed over" is
-  // the question every mis-mapped native attempt raises.
-  async blockedAction(sessionID, callID, signal) {
-    let failure = 'no tool part with this call ID';
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const messages = await this.request(`/session/${encodeURIComponent(sessionID)}/message`, 'GET', undefined, signal, 5000);
-        for (const message of Array.isArray(messages) ? messages : []) {
-          for (const part of message?.parts ?? []) {
-            if (part?.type === 'tool' && part.callID === callID) return { tool: part.tool, input: part.state?.input ?? {} };
-          }
-        }
-        failure = `lookup returned ${Array.isArray(messages) ? `${messages.length} message(s)` : typeof messages}`;
-      } catch (error) { failure = `lookup failed: ${error.message}`; }
-      await delay(150, undefined, { signal, ref: false }).catch(() => {});
+  // The name of the blocked call comes from the event stream; the arguments may still be
+  // empty while the part is pending, and handoffInput() then fills them from the approval.
+  async blockedAction(callID, signal) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const part = this.toolParts.get(callID);
+      if (part?.tool) return part;
+      await delay(120, undefined, { signal, ref: false }).catch(() => {});
     }
-    return { failure };
+    return { failure: 'no event carried this call ID' };
   }
   async pendingPermissions(sessionID, signal) {
     const pending = await this.request('/permission', 'GET', undefined, signal, 5000).catch(() => null);
@@ -151,7 +149,7 @@ export class Backend {
     // Keep the approval request verbatim: OpenCode's field names differ from the SDK
     // types, so cherry-picking fields silently loses the useful ones.
     if (meta.permissions.length < 5) meta.permissions.push(shrinkPermission(p));
-    const action = callID ? await this.blockedAction(meta.sessionID, callID, signal) : null;
+    const action = callID ? await this.blockedAction(callID, signal) : null;
     const native = action?.tool ?? (p.metadata?.command ? 'bash' : null);
     const handoff = native ? buildHandoff({ native, input: handoffInput(action, p), tools: request.tools }) : null;
     if (!handoff) meta.handoffCheck = { native: native ?? null, offeredTools: request.tools.length, detail: action?.failure ?? 'arguments incomplete for the external schema' };
@@ -162,7 +160,9 @@ export class Backend {
     const reason = !callID ? 'the approval request carries no call ID, so it cannot be matched to the external tool list'
       : action ? 'its arguments cannot be mapped onto an external tool schema supplied in this request'
         : 'the call could not be read back from the session';
-    await this.reject(p, rejectFeedback(native || p.permission || 'native tool', reason), signal);
+    // A permission may already be gone (session aborted, duplicate reply): never let that
+    // failing reply take the whole request down with it.
+    await this.reject(p, rejectFeedback(native || p.permission || 'native tool', reason), signal).catch(() => {});
     return null;
   }
 

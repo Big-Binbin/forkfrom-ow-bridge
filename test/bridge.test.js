@@ -742,6 +742,8 @@ test('a handed-over native action becomes the answer without a second model turn
     res.end('true');
   });
   const backend = new Backend(await listen(fake), 'test');
+  // The event stream reports the blocked call; the approval only carries its call ID.
+  backend.toolParts.set('native_bash', { tool: 'bash', input: { command: 'ls /tmp', description: 'list the directory' } });
   try {
     const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
     const call = result.choices[0].message.tool_calls[0];
@@ -774,6 +776,7 @@ test('an unmappable native action is refused by name and the request still compl
     res.end('true');
   });
   const backend = new Backend(await listen(fake), 'test');
+  backend.toolParts.set('native_glob', { tool: 'glob', input: { pattern: '**/*.md' } });
   try {
     const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models));
     assert.equal(result.choices[0].message.content, 'OK', 'A refused native call must not abort the whole request');
@@ -842,6 +845,6 @@ test('a failed handoff reports why instead of swallowing the reason', async () =
   try {
     await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models), undefined, meta);
     assert.ok(meta.handoffCheck, 'The refusal records why it happened');
-    assert.match(meta.handoffCheck.detail, /lookup failed/, 'The lookup failure is reported, not swallowed');
+    assert.match(meta.handoffCheck.detail, /no event carried this call ID/, 'The failure to identify the call is reported, not swallowed');
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
