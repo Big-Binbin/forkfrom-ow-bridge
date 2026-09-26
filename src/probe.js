@@ -35,6 +35,15 @@ export function judgeProbe(response, token) {
   return calls[0];
 }
 
+// The chat-only fallback exists for models whose response format cannot carry tool
+// calls. A model that keeps trying to execute locally is a different failure: publishing
+// it as chat-only would hand WorkBuddy a model that can never act, and the panel would
+// show "可用 · 仅对话" for a model that simply refused the adapter contract.
+export function formatUnsupported(error) {
+  return ['invalid_model_output', 'invalid_tool_call'].includes(error?.code)
+    || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(error?.message || '');
+}
+
 // The probe owns its deadline: AbortSignal.any surfaces the abort as an opaque
 // "The operation was aborted", which used to be reported as a generic error.
 export function probeFailure(cause, timedOut) {

@@ -672,3 +672,14 @@ test('every detection category has a label the panel can show', async () => {
   assert.match(tray, /noAction \? '可用 · 未产生动作'/, 'The tray must show the no-action state');
   assert.match(renderer, /chatOnly \? '可用 · 仅对话'/, 'The panel must show the chat-only state');
 });
+
+test('only format incompatibility degrades a model to chat-only', async () => {
+  const { formatUnsupported } = await import('../src/probe.js');
+  assert.equal(formatUnsupported({ code: 'invalid_model_output' }), true);
+  assert.equal(formatUnsupported({ code: 'invalid_tool_call' }), true);
+  assert.equal(formatUnsupported({ message: 'only `"auto"` is supported for `tool_choice`' }), true);
+  assert.equal(formatUnsupported({ code: 'native_tool_activity', message: 'OpenCode repeatedly attempted native actions; execution was not approved' }), false,
+    'Refusing to act is not a format problem: such a model must not be published as chat-only');
+  assert.equal(formatUnsupported({ code: 'timeout', message: 'Model probe timed out' }), false);
+  assert.equal(formatUnsupported({ code: 'no_action', message: '模型只返回了文本，没有产生任何动作' }), false);
+});

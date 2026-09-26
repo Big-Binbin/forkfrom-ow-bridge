@@ -9,7 +9,7 @@ import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
-import { PROBE_TIMEOUT, probeBody, judgeProbe, probeFailure } from './probe.js';
+import { PROBE_TIMEOUT, probeBody, judgeProbe, probeFailure, formatUnsupported } from './probe.js';
 import { modelResult, withRequestMeta } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
@@ -141,8 +141,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
         } catch (cause) {
           const e = probeFailure(cause, timedOut);
-          const formatUnsupported = ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity'].includes(e.code) || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
-          if (!stopping && formatUnsupported) {
+          if (!stopping && formatUnsupported(e)) {
             try {
               const chatModel = { ...model, chatOnly: true };
               await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
