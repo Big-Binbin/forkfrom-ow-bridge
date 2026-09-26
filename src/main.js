@@ -9,7 +9,8 @@ import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
-import { modelResult } from './model-status.js';
+import { PROBE_TIMEOUT, probeBody, probeModel, probeFailure, formatUnsupported } from './probe.js';
+import { modelResult, withRequestMeta } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
 const dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
@@ -71,16 +72,47 @@ function syncPublished(published = publishedModels()) {
   });
   return syncWrites;
 }
-async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true) {
+async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true, meta = {}) {
   if (stopping) return;
-  const result = { model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly };
+  const result = withRequestMeta({ model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly }, meta, chatOnly);
+  // Keep the raw approval requests so a blocked native action stays diagnosable after the fact.
+  const captured = Array.isArray(meta.permissions) && meta.permissions.length ? { lastPermission: { time: result.time, entries: meta.permissions } } : {};
   if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated'].includes(code)) {
-    update({ lastRequest: result });
+    update({ lastRequest: result, ...captured });
     return;
   }
   if (ok) validated.add(model); else validated.delete(model);
-  update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
+  update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}), ...captured });
   update({ availableModels: usableModels().map(m => m.id) });
+}
+// In-flight visibility: a slow or retrying upstream currently produces no output at all, so
+// the progress OpenCode reports on its event stream is published while the request runs.
+const activities = new Map();
+let activityTimer;
+function publishActivity() {
+  const now = Date.now();
+  update({ activity: [...activities.values()].map(a => ({
+    model: a.model, sessionID: a.sessionID, status: a.status || 'waiting',
+    waitedMs: now - a.startedAt, sinceEventMs: a.lastEventAt ? now - a.lastEventAt : null,
+    attempt: a.attempt, ...(a.error ? { error: a.error } : {}),
+  })) });
+}
+function noteActivity(progress) {
+  if (!progress?.sessionID) return;
+  if (progress.type === 'request.done') { activities.delete(progress.sessionID); publishActivity(); return; }
+  const entry = activities.get(progress.sessionID) || { sessionID: progress.sessionID, startedAt: Date.now(), status: 'waiting' };
+  Object.assign(entry, progress, { model: progress.model || entry.model, lastEventAt: Date.now() });
+  activities.set(progress.sessionID, entry);
+  // Elapsed time must keep growing while the upstream stays quiet.
+  if (!activityTimer) {
+    activityTimer = setInterval(() => { if (activities.size) publishActivity(); else { clearInterval(activityTimer); activityTimer = null; } }, 5000);
+    activityTimer.unref?.();
+  }
+  const urgent = progress.status === 'retry' || progress.status === 'permission' || progress.status === 'busy' || progress.error;
+  const now = Date.now();
+  if (!urgent && now - (entry.writtenAt || 0) < 1000) return;
+  entry.writtenAt = now;
+  publishActivity();
 }
 let probing = false, probeTask;
 const probeAbort = new AbortController();
@@ -97,18 +129,18 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         if (stopping) break;
         update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
+        const meta = {};
+        const deadline = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; deadline.abort(); }, PROBE_TIMEOUT);
         try {
           if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
-          const token = randomBytes(8).toString('hex');
-          const tools = [{ type: 'function', function: { name: 'bridge_probe', description: 'Return the supplied token. This is a capability test with no side effects.', parameters: { type: 'object', properties: { token: { type: 'string', const: token } }, required: ['token'], additionalProperties: false } } }];
-          const response = await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: `Call bridge_probe with token ${token}.` }], tools, tool_choice: 'required', parallel_tool_calls: false }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
-          const calls = response.choices?.[0]?.message?.tool_calls;
-          if (calls?.length !== 1 || calls[0].function?.name !== 'bridge_probe' || JSON.parse(calls[0].function.arguments).token !== token)
-            throw new BridgeError('Tool capability check failed', 502, 'invalid_tool_call');
-          await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
-        } catch (e) {
-          const formatUnsupported = ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity'].includes(e.code) || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
-          if (!stopping && formatUnsupported) {
+          // A retry shares the single deadline, so detection time stays bounded.
+          await probeModel({ complete: token => runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([probeAbort.signal, deadline.signal]), meta) });
+          await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
+        } catch (cause) {
+          const e = probeFailure(cause, timedOut);
+          if (!stopping && formatUnsupported(e)) {
             try {
               const chatModel = { ...model, chatOnly: true };
               await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
@@ -116,8 +148,8 @@ function startProbes(modelID, reveal = false, autoImport = false) {
             } catch (chatError) {
               if (!stopping) await record(model.id, false, chatError.message, chatError.status, chatError.code, Math.round(performance.now() - started), 'probe');
             }
-          } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe');
-        }
+          } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe', undefined, meta);
+        } finally { clearTimeout(timer); }
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }
@@ -221,7 +253,7 @@ try {
   await syncPublished([]);
   binary = await findRuntime(dataDir, message => update({ message }));
   server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
-    status: () => state, probe: startProbes, onResult: record });
+    status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });
   runtime = await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy));

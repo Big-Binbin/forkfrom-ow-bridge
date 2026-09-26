@@ -113,22 +113,31 @@ test('HTTP authenticates local clients, rejects origins, supports SSE and model 
   } finally { server.closeAllConnections(); server.close(); }
 });
 
-test('native approval requests abort inference without approving any action', async () => {
-  const events = []; let started = false;
+test('a native approval without a call ID is refused by name and never approved', async () => {
+  const events = []; const replies = []; let pending = false, held;
   const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
     events.push(`${req.method} ${req.url}`);
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/session') return res.end('{"id":"ses_blocked"}');
-    if (req.url === '/permission') return res.end(JSON.stringify(started ? [{ id: 'per_blocked', sessionID: 'ses_blocked' }] : []));
-    if (req.url.endsWith('/message')) { started = true; return; }
+    if (req.url === '/permission') return res.end(JSON.stringify(pending ? [{ id: 'per_blocked', sessionID: 'ses_blocked', permission: 'bash' }] : []));
+    if (req.url.endsWith('/reply')) {
+      replies.push(JSON.parse(raw)); pending = false;
+      if (held) { const answered = held; held = null; answered.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); }
+      return res.end('true');
+    }
+    if (req.url.endsWith('/message')) { pending = true; held = res; return; }
     res.end('true');
   });
   const backend = new Backend(await listen(fake), 'test', 1500);
   try {
-    await assert.rejects(backend.complete(prepare(body, models)), e => e.code === 'native_tool_activity');
-    assert.ok(events.includes('POST /session/ses_blocked/abort'));
+    const result = await backend.complete(prepare(body, models));
+    assert.equal(result.choices[0].message.content, 'OK', 'A refusal must not abort the whole request');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].reply, 'reject', 'No native action is ever approved');
+    assert.match(replies[0].message, /"bash"/, 'The refusal names the tool');
     assert.ok(events.includes('DELETE /session/ses_blocked'));
-    assert.ok(!events.some(e => e.includes('/reply')));
+    assert.ok(!events.some(e => /approve|allow/.test(e)));
   } finally { fake.closeAllConnections(); fake.close(); }
 });
 
@@ -139,6 +148,8 @@ test('a native action is rejected before a corrected structured response is acce
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/session') return res.end('{"id":"ses_correct"}');
     if (req.url === '/permission') return res.end(JSON.stringify(waiting ? [{ id: 'per_correct', sessionID: 'ses_correct', tool: { callID: 'native_call' } }] : []));
+    if (req.url === '/session/ses_correct/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_call', tool: 'glob', state: { status: 'running', input: { pattern: '**/*' } } }] }]));
     if (req.url.endsWith('/message')) { waiting = res; return; }
     if (req.url.endsWith('/reply')) {
       reply = JSON.parse(raw);
@@ -517,4 +528,351 @@ test('missing Write arguments reach WorkBuddy and its validation error returns t
     const corrected = decode(JSON.stringify({ content: '', calls: [{ name: 'Write', arguments: { file_path: 'out.txt', content: 'hello' } }] }), next);
     assert.equal(JSON.parse(corrected.tool_calls[0].function.arguments).file_path, 'out.txt');
   }
+});
+
+test('a text-only reply is never recorded as a plain success', async () => {
+  const { withRequestMeta } = await import('../src/model-status.js');
+  const noAction = withRequestMeta({ model: 'x', ok: true, category: 'available' }, { tools: 3, calls: 0, nativeAttempts: 1, steps: 4 }, false);
+  assert.equal(noAction.noAction, true);
+  assert.equal(noAction.calls, 0);
+  assert.equal(noAction.nativeAttempts, 1);
+  assert.equal(noAction.steps, 4);
+  assert.equal(withRequestMeta({ ok: true }, { tools: 0, calls: 0 }, true).noAction, undefined, 'Chat-only replies never needed an external action');
+  assert.equal(withRequestMeta({ ok: true }, { tools: 3, calls: 2 }, false).noAction, undefined, 'Returned calls are a real action');
+});
+
+test('request meta reaches the recorder with blocked native attempts', async () => {
+  const recorded = [];
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async (request, signal, meta) => {
+      meta.calls = 0; meta.nativeAttempts = 1; meta.steps = 3;
+      meta.permissions = [{ id: 'per_1', type: 'external_directory', title: 'read', callID: 'call_native' }];
+      return completion(request.model.id, { role: 'assistant', content: 'no action' });
+    } },
+    onResult: async (...args) => { recorded.push(args); }, status: () => ({}) });
+  const base = await listen(server);
+  try {
+    const response = await fetch(base + '/v1/chat/completions', { method: 'POST',
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0][1], true);
+    const meta = recorded[0][8];
+    assert.equal(meta.tools, 1, 'The recorder learns how many external tools were offered');
+    assert.deepEqual({ calls: meta.calls, nativeAttempts: meta.nativeAttempts, steps: meta.steps }, { calls: 0, nativeAttempts: 1, steps: 3 });
+    assert.equal(meta.permissions[0].type, 'external_directory');
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('a cancelled client request is never recorded as a completed success', async () => {
+  const recorded = [];
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async request => {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return completion(request.model.id, { role: 'assistant', content: 'late' });
+    } },
+    onResult: async (...args) => { recorded.push(args); }, status: () => ({}) });
+  const base = await listen(server);
+  const controller = new AbortController();
+  try {
+    const pending = fetch(base + '/v1/chat/completions', { method: 'POST', signal: controller.signal,
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    controller.abort();
+    await pending;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.deepEqual(recorded, [], 'A cancelled request must not be recorded as a success');
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('captured approval payloads keep their shape without unbounded file content', async () => {
+  const { shrinkPermission } = await import('../src/backend.js');
+  const shrunk = shrinkPermission({ id: 'per_1', permission: 'external_directory', patterns: ['/tmp/*'],
+    metadata: { filepath: '/tmp/a.md', content: 'x'.repeat(5000) } }, 20);
+  assert.equal(shrunk.permission, 'external_directory');
+  assert.deepEqual(shrunk.patterns, ['/tmp/*']);
+  assert.equal(shrunk.metadata.filepath, '/tmp/a.md');
+  assert.equal(shrunk.metadata.content, `${'x'.repeat(20)}…[5000 chars]`);
+});
+
+test('an in-flight request reports upstream retries from the event stream', async () => {
+  const progress = [];
+  let streamed;
+  const fake = http.createServer(async (req, res) => {
+    if (req.url === '/event') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      streamed = res;
+      return;
+    }
+    let text = ''; for await (const chunk of req) text += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_events"}');
+    if (req.url === '/permission') return res.end('[]');
+    if (req.url.endsWith('/message')) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      return res.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}');
+    }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  const event = payload => `data: ${JSON.stringify({ directory: '/tmp', payload })}\n\n`;
+  try {
+    const meta = { activity: record => progress.push(record), model: models[0].id };
+    const done = backend.complete(prepare(body, models), undefined, meta);
+    for (let i = 0; i < 40 && !streamed; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(streamed, 'The bridge subscribes to the event stream while a request runs');
+    streamed.write(event({ type: 'session.status', properties: { sessionID: 'ses_events', status: { type: 'retry', attempt: 2, message: 'socket closed', next: 1000 } } }));
+    streamed.write(event({ type: 'session.status', properties: { sessionID: 'ses_other', status: { type: 'retry', attempt: 9 } } }));
+    await done;
+    const retry = progress.find(p => p.status === 'retry');
+    assert.equal(retry.attempt, 2, 'The upstream retry attempt is reported');
+    assert.equal(retry.model, models[0].id);
+    assert.equal(retry.message, 'socket closed');
+    assert.ok(progress.some(p => p.type === 'request.done'), 'Completion is reported so the entry is removed');
+    assert.ok(!progress.some(p => p.sessionID === 'ses_other'), 'Other sessions are ignored');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('detection requires an action, not just a valid envelope', async () => {
+  const { probeBody, judgeProbe, probeFailure } = await import('../src/probe.js');
+  const { modelResult } = await import('../src/model-status.js');
+  const token = 'probe-token-1';
+
+  const body = probeBody(models[0], token);
+  assert.equal(body.tool_choice, undefined, 'Detection must not force a tool call');
+  assert.ok(body.tools.length >= 5, 'Detection exercises the multi-tool schema path');
+  assert.deepEqual(body.tools.find(t => t.function.name === 'Read').function.parameters.required, ['file_path']);
+  assert.ok(body.messages[0].content.includes(token));
+
+  const textOnly = completion(models[0].id, { role: 'assistant', content: '我无法访问文件。' });
+  assert.throws(() => judgeProbe(textOnly, token), e => e.code === 'no_action');
+
+  const acted = completion(models[0].id, { role: 'assistant', content: null,
+    tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Read', arguments: JSON.stringify({ file_path: `/external/probe-${token}.txt` }) } }] });
+  assert.equal(judgeProbe(acted, token).function.name, 'Read');
+
+  const unrelated = completion(models[0].id, { role: 'assistant', content: null,
+    tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'Bash', arguments: '{"command":"ls"}' } }] });
+  assert.throws(() => judgeProbe(unrelated, token), e => e.code === 'probe_mismatch' && /Bash/.test(e.message));
+
+  const timedOut = probeFailure(new Error('The operation was aborted'), true);
+  assert.equal(timedOut.name, 'TimeoutError', 'A real deadline must not look like an opaque abort');
+  assert.equal(timedOut.code, 'timeout');
+  assert.equal(probeFailure(new Error('boom'), false).message, 'boom');
+
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
+});
+
+test('every detection category has a label the panel can show', async () => {
+  const fs = await import('node:fs/promises');
+  const { modelResult } = await import('../src/model-status.js');
+  const renderer = await fs.readFile(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
+  const tray = await fs.readFile(new URL('../desktop/main.cjs', import.meta.url), 'utf8');
+  const expected = { no_action: '无动作', timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' };
+
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
+  assert.equal(modelResult(false, 'insufficient_quota', 429).category, 'quota');
+  assert.equal(modelResult(false, 'Too many requests', 429).category, 'rate_limit');
+  assert.equal(modelResult(false, 'Free tier only within OpenCode', 403).category, 'access');
+  assert.equal(modelResult(true).category, 'available');
+
+  for (const [category, label] of Object.entries(expected))
+    assert.match(renderer, new RegExp(`${category}: '${label}'`), `The panel must label ${category} as ${label}`);
+  assert.match(tray, /noAction \? '可用 · 未产生动作'/, 'The tray must show the no-action state');
+  assert.match(renderer, /chatOnly \? '可用 · 仅对话'/, 'The panel must show the chat-only state');
+});
+
+test('only format incompatibility degrades a model to chat-only', async () => {
+  const { formatUnsupported } = await import('../src/probe.js');
+  assert.equal(formatUnsupported({ code: 'invalid_model_output' }), true);
+  assert.equal(formatUnsupported({ code: 'invalid_tool_call' }), true);
+  assert.equal(formatUnsupported({ message: 'only `"auto"` is supported for `tool_choice`' }), true);
+  assert.equal(formatUnsupported({ code: 'probe_mismatch', message: '模型返回的动作与探测请求不符（收到 Bash）' }), false,
+    'A wrong action is not a format problem either');
+  assert.equal(formatUnsupported({ code: 'native_tool_activity', message: 'OpenCode repeatedly attempted native actions; execution was not approved' }), false,
+    'Refusing to act is not a format problem: such a model must not be published as chat-only');
+  assert.equal(formatUnsupported({ code: 'timeout', message: 'Model probe timed out' }), false);
+  assert.equal(formatUnsupported({ code: 'no_action', message: '模型只返回了文本，没有产生任何动作' }), false);
+});
+
+test('a blocked native bash action maps to the external Bash tool', async () => {
+  const { buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Bash', parameters: { type: 'object',
+    properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } }];
+  const handoff = buildHandoff({ native: 'bash', input: { command: 'ls /Users/Zhuanz/WorkBuddy/', description: 'list' }, tools });
+  assert.deepEqual(handoff, { name: 'Bash', arguments: { command: 'ls /Users/Zhuanz/WorkBuddy/', description: 'list' } });
+  assert.equal(buildHandoff({ native: 'bash', input: { description: 'no command' }, tools }), null, 'required arguments must be satisfiable');
+});
+
+test('a blocked native read maps to Read with the external field name', async () => {
+  const { buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  assert.deepEqual(buildHandoff({ native: 'read', input: { filePath: '/tmp/a.md' }, tools }),
+    { name: 'Read', arguments: { file_path: '/tmp/a.md' } });
+  assert.deepEqual(buildHandoff({ native: 'write', input: { filePath: '/tmp/a.md', content: 'x' }, tools }), null,
+    'no Write tool was supplied, so nothing may be invented');
+});
+
+test('an action without an external equivalent is reported by name, not silently dropped', async () => {
+  const { buildHandoff, rejectFeedback } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  assert.equal(buildHandoff({ native: 'glob', input: { pattern: '**/*.md' }, tools }), null);
+  const feedback = rejectFeedback('glob', 'its arguments cannot be mapped onto an external tool schema supplied in this request');
+  assert.match(feedback, /"glob"/);
+  assert.match(feedback, /cannot be mapped/);
+  assert.match(feedback, /calls array/);
+});
+
+test('a handed-over native action becomes the answer without a second model turn', async () => {
+  const events = []; let waiting = false;
+  const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } };
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_handoff"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(waiting ? [{ id: 'per_bash', sessionID: 'ses_handoff',
+      permission: 'external_directory', metadata: { command: 'ls /tmp' }, tool: { callID: 'native_bash' } }] : []));
+    if (req.url === '/session/ses_handoff/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_bash', tool: 'bash', state: { status: 'running', input: { command: 'ls /tmp', description: 'list the directory' } } }] }]));
+    if (req.url === '/session/ses_handoff/message') { waiting = true; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  // The event stream reports the blocked call; the approval only carries its call ID.
+  backend.toolParts.set('native_bash', { tool: 'bash', input: { command: 'ls /tmp', description: 'list the directory' } });
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
+    const call = result.choices[0].message.tool_calls[0];
+    assert.equal(call.function.name, 'Bash');
+    assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp', description: 'list the directory' });
+    assert.ok(events.includes('POST /session/ses_handoff/abort'), 'The generation is stopped once the action is handed over');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('an unmappable native action is refused by name and the request still completes', async () => {
+  const events = []; const replies = []; let phase = 'idle'; let held;
+  const readTool = { type: 'function', function: { name: 'Read', description: 'Read a file',
+    parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } } };
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_unmapped"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking' ? [{ id: 'per_glob', sessionID: 'ses_unmapped',
+      permission: 'external_directory', metadata: {}, tool: { callID: 'native_glob' } }] : []));
+    if (req.url === '/session/ses_unmapped/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_glob', tool: 'glob', state: { status: 'running', input: { pattern: '**/*.md' } } }] }]));
+    if (req.url.endsWith('/reply')) {
+      replies.push(JSON.parse(raw));
+      phase = 'replied';
+      if (held) { const response = held; held = null; response.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); }
+      return res.end('true');
+    }
+    if (req.url === '/session/ses_unmapped/message') { phase = 'asking'; held = res; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  backend.toolParts.set('native_glob', { tool: 'glob', input: { pattern: '**/*.md' } });
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models));
+    assert.equal(result.choices[0].message.content, 'OK', 'A refused native call must not abort the whole request');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].reply, 'reject');
+    assert.match(replies[0].message, /"glob"/, 'The feedback names the tool that could not be mapped');
+    assert.ok(!events.includes('POST /session/ses_unmapped/abort'));
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('a pending call takes its arguments from the approval metadata', async () => {
+  const { handoffInput, buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  // A pending tool part reports no input; the path is only in the approval metadata.
+  const input = handoffInput({ tool: 'read', input: {} }, { metadata: { filepath: '/tmp/a.md', parentDir: '/tmp' } });
+  assert.deepEqual(input, { filePath: '/tmp/a.md' });
+  assert.deepEqual(buildHandoff({ native: 'read', input, tools }), { name: 'Read', arguments: { file_path: '/tmp/a.md' } });
+  // Real arguments win over the metadata fallback.
+  assert.deepEqual(handoffInput({ input: { filePath: '/real.md' } }, { metadata: { filepath: '/other.md' } }), { filePath: '/real.md' });
+  assert.deepEqual(handoffInput(null, { metadata: { command: 'ls /tmp' } }), { command: 'ls /tmp' });
+});
+
+test('a bash approval without a readable tool part is still handed over', async () => {
+  const events = []; let phase = 'idle';
+  const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } };
+  const fake = http.createServer(async (req, res) => {
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_meta"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking'
+      ? [{ id: 'per_meta', sessionID: 'ses_meta', permission: 'external_directory', metadata: { command: 'ls /tmp' }, tool: { callID: 'native_meta' } }] : []));
+    if (req.url === '/session/ses_meta/message' && req.method === 'GET') return res.end('[]');
+    if (req.url.endsWith('/reply')) { phase = 'replied'; return res.end('true'); }
+    if (req.url === '/session/ses_meta/message') { phase = 'asking'; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
+    const call = result.choices[0].message.tool_calls[0];
+    assert.equal(call.function.name, 'Bash');
+    assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp' });
+    assert.ok(events.includes('POST /session/ses_meta/abort'));
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('a failed handoff reports why instead of swallowing the reason', async () => {
+  const events = []; let phase = 'idle'; let held;
+  const readTool = { type: 'function', function: { name: 'Read', description: 'Read a file',
+    parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } } };
+  const fake = http.createServer(async (req, res) => {
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_why"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking'
+      ? [{ id: 'per_why', sessionID: 'ses_why', permission: 'external_directory', metadata: {}, tool: { callID: 'native_why' } }] : []));
+    if (req.url === '/session/ses_why/message' && req.method === 'GET') { res.statusCode = 500; return res.end('{"error":"boom"}'); }
+    if (req.url.endsWith('/reply')) { phase = 'replied'; if (held) { const r = held; held = null; r.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); } return res.end('true'); }
+    if (req.url === '/session/ses_why/message') { phase = 'asking'; held = res; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  const meta = {};
+  try {
+    await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models), undefined, meta);
+    assert.ok(meta.handoffCheck, 'The refusal records why it happened');
+    assert.match(meta.handoffCheck.detail, /no event carried this call ID/, 'The failure to identify the call is reported, not swallowed');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('a semantic probe miss is retried once, a format failure is not', async () => {
+  const { probeModel, RETRYABLE_PROBE } = await import('../src/probe.js');
+  assert.equal(RETRYABLE_PROBE.has('probe_mismatch'), true);
+  assert.equal(RETRYABLE_PROBE.has('no_action'), true);
+  assert.equal(RETRYABLE_PROBE.has('invalid_model_output'), false, 'Format failures keep the chat-only path');
+  assert.equal(RETRYABLE_PROBE.has('timeout'), false, 'A timeout is load, not a fluke');
+  assert.equal(RETRYABLE_PROBE.has('native_tool_activity'), false);
+
+  const textOnly = () => completion(models[0].id, { role: 'assistant', content: 'no action' });
+  const acted = token => completion(models[0].id, { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function',
+    function: { name: 'Read', arguments: JSON.stringify({ file_path: `/external/probe-${token}.txt` }) } }] });
+
+  let calls = 0;
+  const response = await probeModel({ complete: async token => { calls++; return calls === 1 ? textOnly() : acted(token); } });
+  assert.equal(calls, 2, 'A single miss is retried');
+  assert.equal(response.choices[0].message.tool_calls[0].function.name, 'Read');
+
+  let attempts = 0;
+  await assert.rejects(probeModel({ complete: async () => { attempts++; return textOnly(); } }), e => e.code === 'no_action');
+  assert.equal(attempts, 2, 'Two misses in a row still fail');
+
+  let formatAttempts = 0;
+  await assert.rejects(probeModel({ complete: async () => { formatAttempts++; throw Object.assign(new Error('Invalid model response envelope'), { code: 'invalid_model_output' }); } }), /envelope/);
+  assert.equal(formatAttempts, 1, 'A format failure is not retried here');
 });

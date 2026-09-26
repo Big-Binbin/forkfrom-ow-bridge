@@ -33,7 +33,7 @@ Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为�
 
 OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。WorkBuddy 负责执行外部工具；代理校验模型返回的调用名称、参数和格式。工具检测仅反映单次请求的结果，复杂流程可能仍失败。
 
-所有可用模型在本地 API 中公开。只通过普通对话检测的模型关闭工具调用；不可用模型仍显示在列表，但不会提供给 WorkBuddy。
+所有可用模型在本地 API 中公开。只通过普通对话检测的模型关闭工具调用；不可用模型仍显示在列表，但不会提供给 WorkBuddy。检测提供多个外部工具且不强制调用，因此只回复文本、不产生动作的模型记为 `no_action`（界面显示"无动作"）并撤下，不会通过检测后浪费真实轮次；真实超时单独记为"检测超时"。语义没命中（`no_action`、`probe_mismatch`）会重试一次再判定，共用同一个 60 秒预算；格式不兼容与超时不重试。
 
 模型名称是 `OC · ` 加 OpenCode 原名。导入和退出只修改 `buddyBridgeOwner` 属于本应用的条目，并在实际写入前备份；手动配置保留。配置路径默认 `~/.workbuddy/models.json`，Windows 的 `~` 对应用户目录。
 
@@ -47,7 +47,12 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 
 结构化返回格式不合格时，在同一隔离会话内最多要求模型纠正一次，纠正前不向 WorkBuddy 发出工具调用；工具名/参数错误、原生工具活动和截断仍直接拒绝，代理不为模型生成设置总时长上限；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。
 
-支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
+支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。
+请求结果区分"产出合法回复"和"产生动作"：只回复文本而没有动作时记录 `noAction`，界面显示"可用 · 未产生动作"，不再当作普通成功。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。
+
+请求进行中会订阅 OpenCode 的 `GET /event` 事件流，把当前模型、已等待时长和上游重试次数实时写入 `status.json` 的 `activity`；控制面板服务行与托盘据此显示"等待上游 · 第 N 次重试"，不再出现整轮无输出。请求结束或取消时条目立即移除。事件流按需启动，断开后按 1 秒退避重连，运行时停止时一并关闭。
+
+被拦下的原生动作会**先尝试转交**：按 `callID` 反查该次工具调用，把 bash/read/write/edit 类动作按本次 WorkBuddy 提供的工具 schema 映射成外部调用（`bash`→`Bash`；`read` 的 `filePath`→`file_path`；write/edit 连带 `content`、`old_string`、`new_string`），映射成功就中止这一轮生成并直接作为 `calls` 返回，不再要求模型重述。映射失败才回退到拒绝并指出工具名；反复尝试不再中止整个请求。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
 ## 验证
 

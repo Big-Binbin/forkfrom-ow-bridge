@@ -85,8 +85,9 @@ export async function startBackend(binary, dataDir, logStream, proxyEnv = {}) {
   const child = spawn(binary, ['serve', '--pure', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: path.join(root, 'project'), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.pipe(logStream, { end: false }); child.stderr.pipe(logStream, { end: false });
   let failure; child.on('error', e => { failure = e; });
-  const backend = new Backend(`http://127.0.0.1:${port}`, password);
+  const backend = new Backend(`http://127.0.0.1:${port}`, password, undefined, message => logStream.write(`${new Date().toISOString()} ${message}\n`));
   const stop = async () => {
+    backend.stopEvents();
     if (child.exitCode !== null || child.signalCode !== null) return;
     child.kill('SIGTERM');
     await Promise.race([new Promise(r => child.once('exit', r)), new Promise(r => setTimeout(r, 4000))]);

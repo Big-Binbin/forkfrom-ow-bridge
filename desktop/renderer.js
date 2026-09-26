@@ -6,9 +6,10 @@ function element(tag, className, text) {
 function waiting(id) { return state.probe?.running && state.probe?.pending?.includes(id); }
 function label(model) {
   if (waiting(model.id)) return state.probe.current === model.id ? '检测中' : '等待检测';
+  if ((state.activity || []).some(a => a.model === model.id)) return '请求中';
   const r = state.modelResults?.[model.id];
-  if (state.availableModels?.includes(model.id)) return r?.chatOnly ? '可用 · 仅对话' : '可用';
-  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
+  if (state.availableModels?.includes(model.id)) return r?.noAction ? '可用 · 未产生动作' : r?.chatOnly ? '可用 · 仅对话' : '可用';
+  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限', no_action: '无动作' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
 }
 function rank(model) { return waiting(model.id) ? 1 : state.availableModels?.includes(model.id) ? 0 : state.modelResults?.[model.id]?.ok === false ? 2 : 1; }
 function timing(id) {
@@ -17,7 +18,7 @@ function timing(id) {
   return `最近${r.source === 'probe' ? '检测' : '调用'} · ${r.ok ? '响应' : '失败'}耗时 ${duration}`;
 }
 function renderModels() {
-  const signature = JSON.stringify([state.models, state.modelResults, state.probe, state.availableModels, selected]);
+  const signature = JSON.stringify([state.models, state.modelResults, state.probe, state.availableModels, state.activity, selected]);
   if (signature === lastModels) return; lastModels = signature;
   const scroll = $('models').scrollTop;
   const focused = document.activeElement?.dataset?.model;
@@ -47,12 +48,26 @@ function renderDetails() {
   $('details').replaceChildren(element('strong', '', model.id));
   const add = (text, css = '') => $('details').append(element('p', css, text));
   if (r.chatOnly) add('已自动关闭工具调用；导入后仅支持普通对话。');
+  if (Number.isInteger(r.nativeAttempts) && r.nativeAttempts > 0) add(`最近一次调用拦截了 ${r.nativeAttempts} 次本地执行尝试，动作必须由 WorkBuddy 执行。`, 'error-text');
+  if (r.noAction) add('最近一次调用只有文本回复、没有产生任何动作，WorkBuddy 不会执行任何操作。', 'error-text');
+  if (Number.isInteger(r.calls) && r.calls > 0) add(`最近一次调用返回了 ${r.calls} 个动作。`);
+  if (r.handoff) add(`最近一次调用把被拦下的本地动作转交成外部 ${r.handoff} 调用。`);
   add(`图片输入：${model.images ? '支持' : '不支持'}`);
   add(`上下文：${model.context ?? '未声明'} · 输入上限：${model.input ?? '未单独声明'} · 输出上限：${model.output ?? '未声明'}`);
   const variants = Object.keys(model.variants || {});
   add(model.reasoning ? `推理：支持 · ${variants.length ? '可选档位：' + variants.join(' / ') : '使用默认模式'}` : '推理：OpenCode 未声明支持');
   if (r.error) add(r.error, 'error-text');
   add('最近更新：' + (r.time ? new Date(r.time).toLocaleString() : '尚未检测'));
+}
+function activityText() {
+  const a = (state.activity || [])[0]; if (!a) return null;
+  const name = String(a.model || '').replace(/^opencode\//, '');
+  const seconds = Math.max(0, Math.round((a.waitedMs || 0) / 1000));
+  const waited = seconds < 1 ? '刚发起' : `已等待 ${seconds} 秒`;
+  if (a.status === 'retry') return `等待上游（${name}）· ${waited} · 第 ${a.attempt ?? '?'} 次重试`;
+  if (a.status === 'permission') return `已拦截本地执行尝试（${name}）· ${waited}`;
+  if (a.status === 'busy') return `模型回复中（${name}）· ${waited}`;
+  return `等待模型回复（${name}）· ${waited}`;
 }
 function render() {
   const busy = pendingAction || state.actionBusy || state.probe?.running || state.phase !== 'ready';
@@ -61,7 +76,7 @@ function render() {
   $('restart').disabled = !!(pendingAction || state.actionBusy);
   $('proxy').disabled = !!(pendingAction || state.actionBusy || state.probe?.running || !['ready', 'error'].includes(state.phase));
   $('proxy').checked = state.useSystemProxy === true;
-  $('service-text').textContent = state.message || '正在启动隔离模型服务';
+  $('service-text').textContent = activityText() || state.message || '正在启动隔离模型服务';
   $('service-dot').className = 'dot' + (state.phase === 'error' ? ' error' : '');
   $('discovered').textContent = state.models?.length || 0;
   $('available').textContent = state.availableModels?.length || 0;

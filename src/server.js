@@ -18,7 +18,7 @@ async function readBody(req) {
 }
 function json(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); }
 
-export function createServer({ key, backend, getModels, refresh, importModels, setSystemProxy, probe, status, onResult = () => {} }) {
+export function createServer({ key, backend, getModels, refresh, importModels, setSystemProxy, probe, status, onResult = () => {}, onActivity }) {
   const active = new Set();
   const server = http.createServer(async (req, res) => {
     if (!authorized(req, key)) return json(res, 401, { error: { message: 'Local proxy API key required', type: 'authentication_error' } });
@@ -27,7 +27,7 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
     const controller = new AbortController(); active.add(controller);
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-    let heartbeat, model, started, attempted = false;
+    let heartbeat, model, started, attempted = false, meta = {};
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
       if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: clientModelID(m), object: 'model', owned_by: 'opencode', name: clientModelID(m) })) });
@@ -44,6 +44,7 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
       model = body.model;
       const request = prepare(body, getModels());
       model = request.model.id;
+      meta = { tools: request.tools.length, model: request.model.id, ...(onActivity ? { activity: onActivity } : {}) };
       if (body.stream) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         res.write(': validating model response before emission\n\n');
@@ -51,16 +52,17 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
       }
       attempted = true;
       started = performance.now();
-      const result = await backend.complete(request, controller.signal);
-      await onResult(model, true, undefined, undefined, undefined, Math.round(performance.now() - started));
+      const result = await backend.complete(request, controller.signal, meta);
+      // A cancelled client must never be recorded as a completed request.
       if (controller.signal.aborted) return;
+      await onResult(model, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'request', undefined, meta);
       result.model = body.model;
       if (body.stream) sendSSE(res, result, body.stream_options?.include_usage);
       else json(res, 200, result);
     } catch (e) {
       if (controller.signal.aborted) return;
       const message = e.name === 'TimeoutError' ? 'Model request timed out' : e.message;
-      if (attempted) await onResult(model || null, false, message, e.status, e.code, Math.round(performance.now() - started));
+      if (attempted) await onResult(model || null, false, message, e.status, e.code, Math.round(performance.now() - started), 'request', undefined, meta);
       const error = { message, type: e.code || 'upstream_error', code: e.code || 'upstream_error' };
       if (res.headersSent) res.end(`data: ${JSON.stringify({ error })}\n\n`);
       else json(res, e.status || 502, { error });
