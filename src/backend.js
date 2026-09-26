@@ -245,8 +245,13 @@ export class Backend {
         }
         if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || p.tool !== 'StructuredOutput') && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
         if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
-        const text = response.info?.structured !== undefined ? JSON.stringify(response.info.structured) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
-        if (request.chatOnly && !text.trim()) throw new BridgeError('Model returned no text', 502, 'empty_response');
+        // The envelope arrives one of three ways: OpenCode's structured field, the completed
+        // StructuredOutput call this adapter asks for, or plain text. Reading only the first
+        // and the last rejected a correct answer once, so all three are accepted.
+        const structuredPart = (response.parts || []).find(p => p.type === 'tool' && p.tool === 'StructuredOutput' && p.state?.status === 'completed' && p.state?.input);
+        const envelope = response.info?.structured ?? structuredPart?.state?.input;
+        const text = envelope !== undefined ? JSON.stringify(envelope) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
+        if (!text.trim()) throw new BridgeError(request.chatOnly ? 'Model returned no text' : '模型没有返回信封：structured、已完成的 StructuredOutput 调用、文本 part 三者都为空', 502, request.chatOnly ? 'empty_response' : 'invalid_model_output');
         let message;
         try { message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request); }
         catch (error) {

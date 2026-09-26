@@ -902,3 +902,40 @@ test('glob, grep and skill map onto their external equivalents', async () => {
   // Nothing is invented when the target cannot carry the call.
   assert.equal(buildHandoff({ native: 'glob', input: { pattern: '**/*' }, tools: [grep] }), null);
 });
+
+test('the envelope is read from a completed StructuredOutput call', async () => {
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_structured"}');
+    if (req.url === '/permission') return res.end('[]');
+    if (req.url.endsWith('/message')) return res.end(JSON.stringify({
+      info: { tokens: { input: 3, output: 2 } },
+      parts: [{ type: 'tool', tool: 'StructuredOutput', callID: 'call_structured', state: { status: 'completed',
+        input: { content: 'OK', calls: [{ name: 'write_file', arguments: { path: 'a' } }] } } }],
+    }));
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    const result = await backend.complete(prepare(body, models));
+    assert.equal(result.choices[0].message.content, 'OK');
+    assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file',
+      'A completed StructuredOutput call carries the envelope even without info.structured');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('an empty response says what was missing instead of blaming the envelope format', async () => {
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_empty"}');
+    if (req.url === '/permission') return res.end('[]');
+    if (req.url.endsWith('/message')) return res.end('{"info":{},"parts":[]}');
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    await assert.rejects(backend.complete(prepare(body, models)), e => e.code === 'invalid_model_output' && /三者都为空/.test(e.message));
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});

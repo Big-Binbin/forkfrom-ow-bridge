@@ -81,3 +81,12 @@ Ling 3.0 Flash Fin Free 的一次真实调用在 195 秒后被判失败，错误
 实测发现两处缺陷并修正：（1）拦截瞬间工具 part 仍是 `pending`、`input` 为空，参数实际在审批 `metadata` 里（`filepath`/`command`），现在 `handoffInput()` 用 metadata 兜底、真实参数优先；（2）响应落地前刚冒出的权限请求没被处理，其 tool part 被误判为"异常原生活动"并杀死整个请求，现在接受响应前会先处理一次仍挂起的权限请求（拒绝或转交），消除该竞态。
 
 已知未决：删掉次数上限后，模型若反复尝试原生动作，现在没有任何请求级上限，只能靠上游自身的步数限制——是否需要一个"多次拒绝后终止"的软上限，尚未决定。
+
+
+## 信封读取遗漏了 StructuredOutput 工具调用（2026-09-26）
+
+Space Bunny 的一次真实调用被 WorkBuddy 报错 `Invalid model response envelope`。恢复的 sqlite 数据表明模型没有过错：它调用了 `StructuredOutput`，`state.status=completed`，`state.input` 里 `content` 与 `calls` 齐全；而整个会话里 `structured` 字段一次都没有出现。
+
+原因是读取路径只认两个来源——`info.structured`，或拼接 `type: "text"` 的 part——却从不读 `StructuredOutput` 工具调用的 `input`，尽管同一段代码明确容忍该工具、纠正提示也明确要求模型用它返回信封。于是信封只落在工具调用里时 `text` 为空字符串，`JSON.parse` 抛错并被报成格式错误。该缺陷自 `23f1d94` 起一直存在，且是间歇性的：模型改用文本输出信封时不会触发。
+
+现在信封按三个来源依次读取：`info.structured` → 已完成的 `StructuredOutput` 调用 `state.input` → 文本 part；三者皆空时报错直接说明"三者都为空"，不再是含糊的 `Invalid model response envelope`。回归测试用只含该工具 part、没有 `info.structured` 的响应锁定。
