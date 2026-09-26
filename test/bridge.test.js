@@ -621,3 +621,34 @@ test('an in-flight request reports upstream retries from the event stream', asyn
     assert.ok(!progress.some(p => p.sessionID === 'ses_other'), 'Other sessions are ignored');
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('detection requires an action, not just a valid envelope', async () => {
+  const { probeBody, judgeProbe, probeFailure } = await import('../src/probe.js');
+  const { modelResult } = await import('../src/model-status.js');
+  const token = 'probe-token-1';
+
+  const body = probeBody(models[0], token);
+  assert.equal(body.tool_choice, undefined, 'Detection must not force a tool call');
+  assert.ok(body.tools.length >= 5, 'Detection exercises the multi-tool schema path');
+  assert.deepEqual(body.tools.find(t => t.function.name === 'Read').function.parameters.required, ['file_path']);
+  assert.ok(body.messages[0].content.includes(token));
+
+  const textOnly = completion(models[0].id, { role: 'assistant', content: '我无法访问文件。' });
+  assert.throws(() => judgeProbe(textOnly, token), e => e.code === 'no_action');
+
+  const acted = completion(models[0].id, { role: 'assistant', content: null,
+    tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Read', arguments: JSON.stringify({ file_path: `/external/probe-${token}.txt` }) } }] });
+  assert.equal(judgeProbe(acted, token).function.name, 'Read');
+
+  const unrelated = completion(models[0].id, { role: 'assistant', content: null,
+    tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'Bash', arguments: '{"command":"ls"}' } }] });
+  assert.throws(() => judgeProbe(unrelated, token), e => e.code === 'invalid_tool_call');
+
+  const timedOut = probeFailure(new Error('The operation was aborted'), true);
+  assert.equal(timedOut.name, 'TimeoutError', 'A real deadline must not look like an opaque abort');
+  assert.equal(timedOut.code, 'timeout');
+  assert.equal(probeFailure(new Error('boom'), false).message, 'boom');
+
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
+});

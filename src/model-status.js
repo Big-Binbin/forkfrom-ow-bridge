@@ -2,7 +2,8 @@
 export function modelResult(ok, message = '', status, code) {
   let category = 'available';
   if (!ok) {
-    if (/insufficient[_ ]quota|quota.{0,30}(exceed|exhaust|deplet)|out of credits|insufficient.{0,20}(credit|balance)|额度.{0,10}(不足|用尽)/i.test(message)) category = 'quota';
+    if (code === 'no_action') category = 'no_action';
+    else if (/insufficient[_ ]quota|quota.{0,30}(exceed|exhaust|deplet)|out of credits|insufficient.{0,20}(credit|balance)|额度.{0,10}(不足|用尽)/i.test(message)) category = 'quota';
     else if (status === 429 || /rate.?limit|too many requests/i.test(message)) category = 'rate_limit';
     else if (status === 401 || status === 403) category = 'access';
     else if (/timeout|timed out/i.test(message)) category = 'timeout';

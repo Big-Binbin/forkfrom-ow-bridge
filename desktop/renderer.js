@@ -9,7 +9,7 @@ function label(model) {
   if ((state.activity || []).some(a => a.model === model.id)) return '请求中';
   const r = state.modelResults?.[model.id];
   if (state.availableModels?.includes(model.id)) return r?.noAction ? '可用 · 未产生动作' : r?.chatOnly ? '可用 · 仅对话' : '可用';
-  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
+  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限', no_action: '无动作' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
 }
 function rank(model) { return waiting(model.id) ? 1 : state.availableModels?.includes(model.id) ? 0 : state.modelResults?.[model.id]?.ok === false ? 2 : 1; }
 function timing(id) {

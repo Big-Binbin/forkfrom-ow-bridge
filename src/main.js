@@ -9,6 +9,7 @@ import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
+import { PROBE_TIMEOUT, probeBody, judgeProbe, probeFailure } from './probe.js';
 import { modelResult, withRequestMeta } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
@@ -129,16 +130,17 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
         const meta = {};
+        const deadline = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; deadline.abort(); }, PROBE_TIMEOUT);
         try {
           if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
           const token = randomBytes(8).toString('hex');
-          const tools = [{ type: 'function', function: { name: 'bridge_probe', description: 'Return the supplied token. This is a capability test with no side effects.', parameters: { type: 'object', properties: { token: { type: 'string', const: token } }, required: ['token'], additionalProperties: false } } }];
-          const response = await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: `Call bridge_probe with token ${token}.` }], tools, tool_choice: 'required', parallel_tool_calls: false }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]), meta);
-          const calls = response.choices?.[0]?.message?.tool_calls;
-          if (calls?.length !== 1 || calls[0].function?.name !== 'bridge_probe' || JSON.parse(calls[0].function.arguments).token !== token)
-            throw new BridgeError('Tool capability check failed', 502, 'invalid_tool_call');
+          const response = await runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([probeAbort.signal, deadline.signal]), meta);
+          judgeProbe(response, token);
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
-        } catch (e) {
+        } catch (cause) {
+          const e = probeFailure(cause, timedOut);
           const formatUnsupported = ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity'].includes(e.code) || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
           if (!stopping && formatUnsupported) {
             try {
@@ -149,7 +151,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
               if (!stopping) await record(model.id, false, chatError.message, chatError.status, chatError.code, Math.round(performance.now() - started), 'probe');
             }
           } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe', undefined, meta);
-        }
+        } finally { clearTimeout(timer); }
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }

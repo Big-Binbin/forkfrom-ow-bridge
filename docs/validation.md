@@ -52,3 +52,12 @@ MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 Work
 现在桥会订阅 OpenCode 的 `GET /event`：`session.status` 的 `retry`（含 `attempt`、上游消息）、`busy`、`idle`，以及 `session.error`、`message.part.updated`、`permission.updated` 会按会话匹配到正在进行的请求，写入 `status.json` 的 `activity`（模型、已等待时长、距上次事件时长、重试次数、错误）。控制面板服务行显示"等待上游 · 第 N 次重试"，托盘首项显示"请求中：模型 · N 秒"，模型列表中的该模型标记为"请求中"。请求结束或取消时条目立即移除。
 
 事件流只在存在进度回调时启动，按 1 秒退避重连；运行时停止时关闭。上游挂起时仍没有硬超时——这是 `82a9670` 的既定取舍，改用"可见的等待"而不是打断慢模型。
+
+
+## 检测按"是否产生动作"判定（2026-09-26）
+
+探针此前是 `tool_choice: "required"` + 单个 `bridge_probe` 工具 + 一句话，只验证传输与格式：模型被强制必须返回一个调用，因此必然通过。真实流量是 `tool_choice: auto`，此时"只回文本、不给动作"是合法返回。实测两轮真实请求正是该形态：16:19:36→16:21:14（98 秒）与 16:21:18→16:22:16（58 秒），均为 `calls: 0`、`nativeAttempts: 0`、`steps: 1`，界面表现为 WorkBuddy 无动作；同事后检查确认这两轮没有任何原生权限拦截，因此不是"被拦后断线"。
+
+现在探针改为：5 个真实命名的外部工具（Read/Write/Bash/Glob/WebSearch，各带必填参数）、不传 `tool_choice`、指令要求读取一个带随机 token 的文件。判定标准是"是否返回携带该 token 的 Read 调用"：只回文本记为 `no_action`（分类 `no_action`，界面显示"无动作"）并撤下；返回与请求不符的调用仍记 `invalid_tool_call`。
+
+超时也单独区分：探针此前依赖 `AbortSignal.any`，30 秒到点抛出的是 `AbortError`（"The operation was aborted"），被归为一般错误，界面因此不显示"检测超时"。现在探针自己持计时器，超时记为 `timeout`。**30 秒上限本身未改动**——它同样会导致偏慢的模型（如 Nemotron 3.5 Lightning 连续两次）被撤下，是否放宽是独立决策。
