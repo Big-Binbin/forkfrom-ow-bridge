@@ -821,3 +821,27 @@ test('a bash approval without a readable tool part is still handed over', async 
     assert.ok(events.includes('POST /session/ses_meta/abort'));
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('a failed handoff reports why instead of swallowing the reason', async () => {
+  const events = []; let phase = 'idle'; let held;
+  const readTool = { type: 'function', function: { name: 'Read', description: 'Read a file',
+    parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } } };
+  const fake = http.createServer(async (req, res) => {
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_why"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking'
+      ? [{ id: 'per_why', sessionID: 'ses_why', permission: 'external_directory', metadata: {}, tool: { callID: 'native_why' } }] : []));
+    if (req.url === '/session/ses_why/message' && req.method === 'GET') { res.statusCode = 500; return res.end('{"error":"boom"}'); }
+    if (req.url.endsWith('/reply')) { phase = 'replied'; if (held) { const r = held; held = null; r.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); } return res.end('true'); }
+    if (req.url === '/session/ses_why/message') { phase = 'asking'; held = res; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  const meta = {};
+  try {
+    await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models), undefined, meta);
+    assert.ok(meta.handoffCheck, 'The refusal records why it happened');
+    assert.match(meta.handoffCheck.detail, /lookup failed/, 'The lookup failure is reported, not swallowed');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});

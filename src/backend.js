@@ -118,17 +118,23 @@ export class Backend {
     return this.request(`/permission/${encodeURIComponent(permission.id)}/reply`, 'POST', { reply: 'reject', message }, signal, 5000);
   }
   // An approval request carries a call ID, not the arguments: read them back from the part.
+  // Failures are reported instead of swallowed, because "why was this not handed over" is
+  // the question every mis-mapped native attempt raises.
   async blockedAction(sessionID, callID, signal) {
+    let failure = 'no tool part with this call ID';
     for (let attempt = 0; attempt < 3; attempt++) {
-      const messages = await this.request(`/session/${encodeURIComponent(sessionID)}/message`, 'GET', undefined, signal, 5000).catch(() => null);
-      for (const message of Array.isArray(messages) ? messages : []) {
-        for (const part of message?.parts ?? []) {
-          if (part?.type === 'tool' && part.callID === callID) return { tool: part.tool, input: part.state?.input ?? {} };
+      try {
+        const messages = await this.request(`/session/${encodeURIComponent(sessionID)}/message`, 'GET', undefined, signal, 5000);
+        for (const message of Array.isArray(messages) ? messages : []) {
+          for (const part of message?.parts ?? []) {
+            if (part?.type === 'tool' && part.callID === callID) return { tool: part.tool, input: part.state?.input ?? {} };
+          }
         }
-      }
+        failure = `lookup returned ${Array.isArray(messages) ? `${messages.length} message(s)` : typeof messages}`;
+      } catch (error) { failure = `lookup failed: ${error.message}`; }
       await delay(150, undefined, { signal, ref: false }).catch(() => {});
     }
-    return null;
+    return { failure };
   }
   async pendingPermissions(sessionID, signal) {
     const pending = await this.request('/permission', 'GET', undefined, signal, 5000).catch(() => null);
@@ -148,6 +154,7 @@ export class Backend {
     const action = callID ? await this.blockedAction(meta.sessionID, callID, signal) : null;
     const native = action?.tool ?? (p.metadata?.command ? 'bash' : null);
     const handoff = native ? buildHandoff({ native, input: handoffInput(action, p), tools: request.tools }) : null;
+    if (!handoff) meta.handoffCheck = { native: native ?? null, offeredTools: request.tools.length, detail: action?.failure ?? 'arguments incomplete for the external schema' };
     if (handoff) {
       await this.reject(p, 'This native action is executed by the external client instead.', signal).catch(() => {});
       return { handoff };
