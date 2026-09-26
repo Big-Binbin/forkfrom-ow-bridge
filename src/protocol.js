@@ -89,9 +89,15 @@ export function decode(text, request) {
       value.calls = value.tool_calls.map(call => call?.type === 'function'
         ? { name: call.function?.name, arguments: call.function?.arguments } : null);
     }
-    if (value.content == null && Array.isArray(value.calls) && value.calls.length) value.content = '';
-    if (typeof value.content === 'string' && value.calls == null
-      && Object.keys(value).every(key => ['content', 'calls', 'role'].includes(key))) value.calls = [];
+    // Each field may be null when the other one carries the answer: content is null for a
+    // tool-only reply and calls is absent for a text-only one. Both spellings mean the
+    // documented value, and rejecting them reported a correct answer as a format error.
+    // An envelope with neither field is still nothing at all, so it stays invalid, and a
+    // tool call flattened into the envelope stays invalid too: accepting it as plain text
+    // would silently drop the action it asked for.
+    const flattened = ['name', 'arguments', 'tool_calls', 'function'].some(key => key in value);
+    if (value.calls == null && typeof value.content === 'string' && !flattened) value.calls = [];
+    if (value.content == null && Array.isArray(value.calls)) value.content = '';
     if (Array.isArray(value.calls)) for (const call of value.calls) {
       if (call && typeof call.arguments === 'string') {
         try { call.arguments = JSON.parse(call.arguments); }
@@ -99,7 +105,12 @@ export function decode(text, request) {
       }
     }
   }
-  if (!value || typeof value.content !== 'string' || !Array.isArray(value.calls)) throw new BridgeError('Invalid model response envelope', 502, 'invalid_model_output');
+  if (!value || typeof value.content !== 'string' || !Array.isArray(value.calls)) {
+    const shape = value && typeof value === 'object' && !Array.isArray(value)
+      ? `content=${value.content === null ? 'null' : typeof value.content}, calls=${Array.isArray(value.calls) ? 'array' : typeof value.calls}`
+      : `value=${Array.isArray(value) ? 'array' : typeof value}`;
+    throw new BridgeError(`Invalid model response envelope (${shape})`, 502, 'invalid_model_output');
+  }
   if ((request.choice === 'none' || !request.tools.length) && value.calls.length) throw new BridgeError('Model violated tool_choice:none', 502, 'invalid_tool_call');
   if ((request.choice === 'required' || request.forced) && !value.calls.length) throw new BridgeError('Model omitted required tool', 502, 'invalid_tool_call');
   if (!request.parallel && value.calls.length > 1) throw new BridgeError('Model returned multiple tools when disabled', 502, 'invalid_tool_call');

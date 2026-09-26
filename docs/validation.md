@@ -90,3 +90,10 @@ Space Bunny 的一次真实调用被 WorkBuddy 报错 `Invalid model response en
 原因是读取路径只认两个来源——`info.structured`，或拼接 `type: "text"` 的 part——却从不读 `StructuredOutput` 工具调用的 `input`，尽管同一段代码明确容忍该工具、纠正提示也明确要求模型用它返回信封。于是信封只落在工具调用里时 `text` 为空字符串，`JSON.parse` 抛错并被报成格式错误。该缺陷自 `23f1d94` 起一直存在，且是间歇性的：模型改用文本输出信封时不会触发。
 
 现在信封按三个来源依次读取：`info.structured` → 已完成的 `StructuredOutput` 调用 `state.input` → 文本 part；三者皆空时报错直接说明"三者都为空"，不再是含糊的 `Invalid model response envelope`。回归测试用只含该工具 part、没有 `info.structured` 的响应锁定。
+
+
+## 信封字段的空值不再判成格式错误（2026-09-26）
+
+同一 bug 形态的另外两处：`{"content":null,"calls":[]}` 会落到 `Invalid model response envelope`；而 `{"content":"…","calls":null,"reasoning":"…"}` 只因为多带一个字段就不再满足归一化条件，同样硬失败。两者都是模型给出了合法语义却被报成格式错误，与上面那条遗漏 `StructuredOutput` 同源。
+
+归一化改为"两个字段互相补默认值"：`calls` 为空（`null` 或缺失）且 `content` 是字符串时，`calls` 取 `[]`；`content` 为空且 `calls` 是数组时，`content` 取 `''`。因此"只有一边缺"的两种写法都被接受，无害的多余字段（如 `reasoning`）不再影响归一化；而两者都缺（`{}`）仍然非法——那等于什么都没说。防线保留在"工具调用被拍平进信封"这一种形状上：`{"content":"x","name":"write_file","arguments":{}}` 继续报错，否则那个动作会被当成纯文本静默丢掉（这条由已有测试锁定）。落空时的报错现在带上形状（如 `content=number, calls=array`），不再只有一句含糊的 `Invalid model response envelope`。

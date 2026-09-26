@@ -939,3 +939,22 @@ test('an empty response says what was missing instead of blaming the envelope fo
     await assert.rejects(backend.complete(prepare(body, models)), e => e.code === 'invalid_model_output' && /三者都为空/.test(e.message));
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('a null envelope field defaults from the other instead of failing the format', () => {
+  const request = prepare(body, models);
+  const call = { name: 'write_file', arguments: { path: 'x' } };
+  assert.deepEqual(decode('{"content":null,"calls":[]}', request), { role: 'assistant', content: '' },
+    'null content with no calls means an empty answer, not a format error');
+  assert.deepEqual(decode(JSON.stringify({ content: 'hi', calls: null, reasoning: 'because' }), request),
+    { role: 'assistant', content: 'hi' },
+    'extra fields must not stop calls from defaulting to an empty list');
+  assert.equal(decode(JSON.stringify({ content: null, calls: [call] }), request).content, null,
+    'a tool-only reply still reports null content');
+  assert.throws(() => decode('{}', request), /Invalid model response envelope \(content=undefined, calls=undefined\)/,
+    'an envelope with neither field is still nothing at all');
+  assert.throws(() => decode('{"content":5,"calls":[]}', request), /content=number/,
+    'the rejection must name the field that was wrong');
+  assert.throws(() => decode('{"content":"x","name":"write_file","arguments":{}}', request),
+    /Invalid model response envelope/,
+    'a tool call flattened into the envelope must never pass as a plain text answer');
+});
