@@ -465,7 +465,10 @@ test('format correction is bounded and never retries native activity or truncati
       return [];
     };
     await assert.rejects(backend.complete(prepare(body, models)));
-    assert.equal(calls, ['malformed', 'unlisted'].includes(kind) ? 2 : 1);
+    // A format failure now spends three rounds: the correction, the translation attempt (no
+    // translator is configured here), then the explicit retry. Native activity and truncation
+    // still fail immediately.
+    assert.equal(calls, ['native', 'truncated'].includes(kind) ? 1 : 3);
   }
 });
 
@@ -1111,4 +1114,41 @@ test('the material carries the external conversation the translation must be gro
   const body_ = JSON.parse(messages.get('ses_1').parts[0].text);
   assert.deepEqual(body_.material.conversation.at(-1), { role: 'user', content: 'Write a file' });
   assert.match(body_.conventions, /file_path is absolute/);
+});
+
+test('with nothing to infer from, the model is told what failed and asked once more', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  const sent = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: 'ses_retry' };
+    if (route.endsWith('/message')) {
+      // The bridge rewrites payload.parts in place, so keep the text as it was sent.
+      sent.push(payload.parts[0].text);
+      if (sent.length < 3) return { info: { structured: { content: 5, calls: [] } }, parts: [] };
+      return { info: { structured: { content: '', calls: [{ name: 'write_file', arguments: { path: 'x' } }] } }, parts: [] };
+    }
+    return [];
+  };
+  const meta = {};
+  const result = await backend.complete(request, undefined, meta);
+  assert.equal(sent.length, 3, 'The format correction, then one explicit retry');
+  assert.match(sent[1], /adapter JSON format check/);
+  assert.match(sent[2], /重试一次/);
+  assert.match(sent[2], /Invalid model response envelope/, 'The model is told what actually failed');
+  assert.equal(meta.repaired.envelope.reason, 'no translator available');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+});
+
+test('detection never spends the extra round', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  let calls = 0;
+  backend.request = async route => {
+    if (route === '/session') return { id: 'ses_probe' };
+    if (route.endsWith('/message')) { calls += 1; return { info: { structured: { content: 5, calls: [] } }, parts: [] }; }
+    return [];
+  };
+  await assert.rejects(backend.complete(request, undefined, { probe: true }), error => error.code === 'invalid_model_output');
+  assert.equal(calls, 2, 'A probe stops after the single format correction');
 });

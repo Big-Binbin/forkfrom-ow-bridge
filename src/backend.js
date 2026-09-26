@@ -236,7 +236,7 @@ export class Backend {
         } } }),
         parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
       };
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         meta.steps += 1;
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
         let handoff = response?.handoff ?? null;
@@ -297,11 +297,17 @@ export class Backend {
             payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
             continue;
           }
-          // Still unreadable: hand the material to the translator before giving up. Detection never
-          // translates, so a probe keeps measuring the model rather than the translator's help.
-          if (!meta.probe) {
-            const translated = await this.translate(request, 'envelope', rawMaterial(response, request), meta, null, signal);
-            if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
+          if (attempt === 1) {
+            // Still unreadable: hand the material to the translator. Detection never translates, so a
+            // probe keeps measuring the model rather than the translator's help.
+            if (!meta.probe) {
+              const translated = await this.translate(request, 'envelope', rawMaterial(response, request), meta, null, signal);
+              if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
+              // Nothing was inferable, so the model gets one more round with the failure spelled out
+              // instead of the turn simply dying here.
+              payload.parts = [{ type: 'text', text: `上一条回复无法交给客户端执行：${error.message}。请重试一次，这次务必写具体：把要做的动作写成 {"content":"给用户的话","calls":[{"name":"外部工具名","arguments":{具体参数}}]} 的 JSON；参数要完整（完整路径、完整命令、要改的原文与替换文本）。如果本来就没有动作要做，就把给用户的结论写完整、写清楚。不要调用本地工具，也不要声称动作已经完成。` }];
+              continue;
+            }
           }
           throw error;
         }
