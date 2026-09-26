@@ -1174,3 +1174,28 @@ test('a reply cut off by the output limit is asked again, compactly', async () =
   assert.match(sent[2], /写紧凑/, 'The retry asks for a compact envelope, not a detailed one');
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
 });
+
+test('a silent upstream is aborted instead of waited on forever', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.silenceLimit = 60;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  backend.request = async route => {
+    if (route === '/session') return { id: 'ses_silent' };
+    if (route.endsWith('/message')) { await pending; return { info: {}, parts: [] }; }
+    return [];
+  };
+  await assert.rejects(
+    backend.complete(request, undefined, { activity: () => {} }),
+    error => error.code === 'upstream_silent' && /没有任何输出/.test(error.message));
+  release();
+});
+
+test('a content event keeps the watchdog quiet, a status heartbeat does not', async () => {
+  const backend = new Backend('http://unused', 'test');
+  backend.handleEvent({ type: 'session.status', properties: { sessionID: 'ses_x', status: { type: 'busy' } } });
+  assert.equal(backend.contentAt.has('ses_x'), false, 'A busy heartbeat is not liveness');
+  backend.handleEvent({ type: 'message.part.updated', properties: { sessionID: 'ses_x', part: { type: 'reasoning' } } });
+  assert.ok(Date.now() - backend.contentAt.get('ses_x') < 1000, 'Streaming reasoning counts as liveness');
+});
