@@ -27,6 +27,13 @@ function showWindow() {
   }
   window.show(); window.focus();
 }
+function activityLabel(s) {
+  const a = (s.activity || [])[0];
+  if (!a) return s.probe?.running ? '正在检测模型…' : s.message || '正在启动…';
+  const seconds = Math.max(0, Math.round((a.waitedMs || 0) / 1000));
+  const retry = a.status === 'retry' ? ` · 第 ${a.attempt ?? '?'} 次重试` : '';
+  return `请求中：${String(a.model || '').replace('opencode/', '')} · ${seconds} 秒${retry}`;
+}
 function publish() {
   if (window && !window.isDestroyed()) window.webContents.send('state', { ...state, actionBusy });
   if (!tray) return;
@@ -37,7 +44,7 @@ function publish() {
   const busy = actionBusy || state.probe?.running || state.phase !== 'ready';
   tray.setToolTip('Buddy Bridge');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: state.probe?.running ? '正在检测模型…' : state.message || '正在启动…', enabled: false },
+    { label: activityLabel(state), enabled: false },
     { label: '打开控制面板', click: showWindow }, { type: 'separator' },
     { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },

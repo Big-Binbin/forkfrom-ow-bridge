@@ -6,6 +6,7 @@ function element(tag, className, text) {
 function waiting(id) { return state.probe?.running && state.probe?.pending?.includes(id); }
 function label(model) {
   if (waiting(model.id)) return state.probe.current === model.id ? '检测中' : '等待检测';
+  if ((state.activity || []).some(a => a.model === model.id)) return '请求中';
   const r = state.modelResults?.[model.id];
   if (state.availableModels?.includes(model.id)) return r?.noAction ? '可用 · 未产生动作' : r?.chatOnly ? '可用 · 仅对话' : '可用';
   return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
@@ -17,7 +18,7 @@ function timing(id) {
   return `最近${r.source === 'probe' ? '检测' : '调用'} · ${r.ok ? '响应' : '失败'}耗时 ${duration}`;
 }
 function renderModels() {
-  const signature = JSON.stringify([state.models, state.modelResults, state.probe, state.availableModels, selected]);
+  const signature = JSON.stringify([state.models, state.modelResults, state.probe, state.availableModels, state.activity, selected]);
   if (signature === lastModels) return; lastModels = signature;
   const scroll = $('models').scrollTop;
   const focused = document.activeElement?.dataset?.model;
@@ -57,6 +58,16 @@ function renderDetails() {
   if (r.error) add(r.error, 'error-text');
   add('最近更新：' + (r.time ? new Date(r.time).toLocaleString() : '尚未检测'));
 }
+function activityText() {
+  const a = (state.activity || [])[0]; if (!a) return null;
+  const name = String(a.model || '').replace(/^opencode\//, '');
+  const seconds = Math.max(0, Math.round((a.waitedMs || 0) / 1000));
+  const waited = seconds < 1 ? '刚发起' : `已等待 ${seconds} 秒`;
+  if (a.status === 'retry') return `等待上游（${name}）· ${waited} · 第 ${a.attempt ?? '?'} 次重试`;
+  if (a.status === 'permission') return `已拦截本地执行尝试（${name}）· ${waited}`;
+  if (a.status === 'busy') return `模型回复中（${name}）· ${waited}`;
+  return `等待模型回复（${name}）· ${waited}`;
+}
 function render() {
   const busy = pendingAction || state.actionBusy || state.probe?.running || state.phase !== 'ready';
   for (const id of ['refresh', 'probe', 'import', 'proxy']) $(id).disabled = !!busy;
@@ -64,7 +75,7 @@ function render() {
   $('restart').disabled = !!(pendingAction || state.actionBusy);
   $('proxy').disabled = !!(pendingAction || state.actionBusy || state.probe?.running || !['ready', 'error'].includes(state.phase));
   $('proxy').checked = state.useSystemProxy === true;
-  $('service-text').textContent = state.message || '正在启动隔离模型服务';
+  $('service-text').textContent = activityText() || state.message || '正在启动隔离模型服务';
   $('service-dot').className = 'dot' + (state.phase === 'error' ? ' error' : '');
   $('discovered').textContent = state.models?.length || 0;
   $('available').textContent = state.availableModels?.length || 0;

@@ -25,16 +25,18 @@ export function shrinkPermission(value, limit = 400) {
 }
 
 export class Backend {
-  constructor(base, password, timeout) {
-    Object.assign(this, { base, password, timeout });
+  constructor(base, password, timeout, log = () => {}) {
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null });
+  }
+  headers() {
+    return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
   }
   async request(route, method = 'GET', body, signal, timeout = this.timeout) {
     const requestSignal = timeout == null ? signal : AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]);
     return new Promise((resolve, reject) => {
       // Local inference has no proxy-owned deadline or HTTP client's implicit response timeout.
       const req = httpRequest(this.base + route, {
-        method, signal: requestSignal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` },
+        method, signal: requestSignal, headers: this.headers(),
       }, response => {
         const chunks = [];
         response.on('data', chunk => chunks.push(chunk));
@@ -53,6 +55,63 @@ export class Backend {
     });
   }
 
+  // One event-stream connection serves every in-flight request: OpenCode reports its own
+  // upstream retries there, which the request/response path never exposes. A 5-minute wait
+  // with no output at all is a real user-visible failure mode, so it must be observable.
+  watchEvents() {
+    if (this.events) return;
+    const controller = new AbortController();
+    this.events = controller;
+    (async () => {
+      while (!controller.signal.aborted) {
+        try { await this.streamEvents(controller.signal); }
+        catch (e) { if (controller.signal.aborted) return; this.log(`Event stream error: ${e.message}`); }
+        await delay(1000, undefined, { signal: controller.signal, ref: false }).catch(() => {});
+      }
+    })().catch(() => {});
+  }
+  stopEvents() {
+    this.events?.abort();
+    this.events = null;
+  }
+  streamEvents(signal) {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(this.base + '/event', { method: 'GET', signal, headers: { ...this.headers(), Accept: 'text/event-stream' } }, response => {
+        if (response.statusCode !== 200) { response.resume(); return reject(new BridgeError(`Event stream HTTP ${response.statusCode}`, 502, 'event_stream_error')); }
+        let buffer = '';
+        response.on('data', chunk => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            try { this.handleEvent(JSON.parse(line.slice(5).trim())); } catch {}
+          }
+        });
+        response.on('error', reject);
+        response.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+  handleEvent(wrapper) {
+    const event = wrapper?.payload ?? wrapper;
+    const sessionID = event?.properties?.sessionID;
+    const meta = sessionID ? this.active.get(sessionID) : undefined;
+    if (!meta || typeof meta.activity !== 'function') return;
+    const status = event.properties?.status;
+    const progress = { sessionID, model: meta.model, type: event.type, at: Date.now() };
+    if (event.type === 'session.status' && status) {
+      progress.status = status.type;
+      if (status.type === 'retry') Object.assign(progress, { attempt: status.attempt, message: status.message, next: status.next });
+    }
+    if (event.type === 'session.error') progress.error = event.properties?.error?.data?.message || event.properties?.error?.name || '上游错误';
+    if (event.type === 'message.part.updated') progress.part = event.properties?.part?.type;
+    if (event.type === 'permission.updated') progress.status = 'permission';
+    meta.activity(progress);
+  }
+
   async models() {
     const result = freeModels(await this.request('/provider'));
     if (!result.length) throw new Error('No free text models found; existing list preserved');
@@ -63,6 +122,8 @@ export class Backend {
     // Native tools require approval; the bridge aborts any attempted native action.
     const session = await this.request('/session', 'POST', { title: 'Buddy Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
+    meta.sessionID = session.id;
+    if (typeof meta.activity === 'function') { this.active.set(session.id, meta); this.watchEvents(); }
     const guard = new AbortController();
     const rejected = new Set();
     const guardSignal = AbortSignal.any([guard.signal, ...(signal ? [signal] : [])]);
@@ -130,6 +191,10 @@ export class Backend {
     } finally {
       guard.abort();
       await watch.catch(() => {});
+      if (typeof meta.activity === 'function') {
+        meta.activity({ sessionID: session.id, model: meta.model, type: 'request.done' });
+        this.active.delete(session.id);
+      }
       // Cancellation must stop backend work, not merely disconnect the HTTP request.
       if (!successful) await this.request(`${route}/abort`, 'POST', undefined, undefined, 5000).catch(() => {});
       await this.request(route, 'DELETE', undefined, undefined, 5000).catch(e => console.error('Session cleanup failed:', e.code || e.name));

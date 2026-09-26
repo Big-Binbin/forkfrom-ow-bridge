@@ -48,7 +48,9 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 结构化返回格式不合格时，在同一隔离会话内最多要求模型纠正一次，纠正前不向 WorkBuddy 发出工具调用；工具名/参数错误、原生工具活动和截断仍直接拒绝，代理不为模型生成设置总时长上限；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。
 
 支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。
-请求结果区分"产出合法回复"和"产生动作"：只回复文本而没有动作时记录 `noAction`，界面显示"可用 · 未产生动作"，不再当作普通成功。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
+请求结果区分"产出合法回复"和"产生动作"：只回复文本而没有动作时记录 `noAction`，界面显示"可用 · 未产生动作"，不再当作普通成功。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。
+
+请求进行中会订阅 OpenCode 的 `GET /event` 事件流，把当前模型、已等待时长和上游重试次数实时写入 `status.json` 的 `activity`；控制面板服务行与托盘据此显示"等待上游 · 第 N 次重试"，不再出现整轮无输出。请求结束或取消时条目立即移除。事件流按需启动，断开后按 1 秒退避重连，运行时停止时一并关闭。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
 ## 验证
 

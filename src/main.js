@@ -84,6 +84,35 @@ async function record(model, ok, error, status, code, durationMs, source = 'requ
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}), ...captured });
   update({ availableModels: usableModels().map(m => m.id) });
 }
+// In-flight visibility: a slow or retrying upstream currently produces no output at all, so
+// the progress OpenCode reports on its event stream is published while the request runs.
+const activities = new Map();
+let activityTimer;
+function publishActivity() {
+  const now = Date.now();
+  update({ activity: [...activities.values()].map(a => ({
+    model: a.model, sessionID: a.sessionID, status: a.status || 'waiting',
+    waitedMs: now - a.startedAt, sinceEventMs: a.lastEventAt ? now - a.lastEventAt : null,
+    attempt: a.attempt, ...(a.error ? { error: a.error } : {}),
+  })) });
+}
+function noteActivity(progress) {
+  if (!progress?.sessionID) return;
+  if (progress.type === 'request.done') { activities.delete(progress.sessionID); publishActivity(); return; }
+  const entry = activities.get(progress.sessionID) || { sessionID: progress.sessionID, startedAt: Date.now(), status: 'waiting' };
+  Object.assign(entry, progress, { model: progress.model || entry.model, lastEventAt: Date.now() });
+  activities.set(progress.sessionID, entry);
+  // Elapsed time must keep growing while the upstream stays quiet.
+  if (!activityTimer) {
+    activityTimer = setInterval(() => { if (activities.size) publishActivity(); else { clearInterval(activityTimer); activityTimer = null; } }, 5000);
+    activityTimer.unref?.();
+  }
+  const urgent = progress.status === 'retry' || progress.status === 'permission' || progress.status === 'busy' || progress.error;
+  const now = Date.now();
+  if (!urgent && now - (entry.writtenAt || 0) < 1000) return;
+  entry.writtenAt = now;
+  publishActivity();
+}
 let probing = false, probeTask;
 const probeAbort = new AbortController();
 function startProbes(modelID, reveal = false, autoImport = false) {
@@ -224,7 +253,7 @@ try {
   await syncPublished([]);
   binary = await findRuntime(dataDir, message => update({ message }));
   server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
-    status: () => state, probe: startProbes, onResult: record });
+    status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });
   runtime = await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy));

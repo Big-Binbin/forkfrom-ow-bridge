@@ -583,3 +583,41 @@ test('captured approval payloads keep their shape without unbounded file content
   assert.equal(shrunk.metadata.filepath, '/tmp/a.md');
   assert.equal(shrunk.metadata.content, `${'x'.repeat(20)}…[5000 chars]`);
 });
+
+test('an in-flight request reports upstream retries from the event stream', async () => {
+  const progress = [];
+  let streamed;
+  const fake = http.createServer(async (req, res) => {
+    if (req.url === '/event') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      streamed = res;
+      return;
+    }
+    let text = ''; for await (const chunk of req) text += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_events"}');
+    if (req.url === '/permission') return res.end('[]');
+    if (req.url.endsWith('/message')) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      return res.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}');
+    }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  const event = payload => `data: ${JSON.stringify({ directory: '/tmp', payload })}\n\n`;
+  try {
+    const meta = { activity: record => progress.push(record), model: models[0].id };
+    const done = backend.complete(prepare(body, models), undefined, meta);
+    for (let i = 0; i < 40 && !streamed; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(streamed, 'The bridge subscribes to the event stream while a request runs');
+    streamed.write(event({ type: 'session.status', properties: { sessionID: 'ses_events', status: { type: 'retry', attempt: 2, message: 'socket closed', next: 1000 } } }));
+    streamed.write(event({ type: 'session.status', properties: { sessionID: 'ses_other', status: { type: 'retry', attempt: 9 } } }));
+    await done;
+    const retry = progress.find(p => p.status === 'retry');
+    assert.equal(retry.attempt, 2, 'The upstream retry attempt is reported');
+    assert.equal(retry.model, models[0].id);
+    assert.equal(retry.message, 'socket closed');
+    assert.ok(progress.some(p => p.type === 'request.done'), 'Completion is reported so the entry is removed');
+    assert.ok(!progress.some(p => p.sessionID === 'ses_other'), 'Other sessions are ignored');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});

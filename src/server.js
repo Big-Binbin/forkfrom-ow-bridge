@@ -18,7 +18,7 @@ async function readBody(req) {
 }
 function json(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); }
 
-export function createServer({ key, backend, getModels, refresh, importModels, setSystemProxy, probe, status, onResult = () => {} }) {
+export function createServer({ key, backend, getModels, refresh, importModels, setSystemProxy, probe, status, onResult = () => {}, onActivity }) {
   const active = new Set();
   const server = http.createServer(async (req, res) => {
     if (!authorized(req, key)) return json(res, 401, { error: { message: 'Local proxy API key required', type: 'authentication_error' } });
@@ -44,7 +44,7 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
       model = body.model;
       const request = prepare(body, getModels());
       model = request.model.id;
-      meta = { tools: request.tools.length };
+      meta = { tools: request.tools.length, model: request.model.id, ...(onActivity ? { activity: onActivity } : {}) };
       if (body.stream) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         res.write(': validating model response before emission\n\n');

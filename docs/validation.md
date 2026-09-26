@@ -43,3 +43,12 @@ MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 Work
 原因是 `ok` 只代表产出了格式合法的信封。现在请求结果额外记录 `calls`、`nativeAttempts`、`steps`：只回复文本而没有动作时标记 `noAction`，界面显示"可用 · 未产生动作"；被拦截的原生审批请求原文存入 `status.json` 的 `lastPermission`（超长字符串截断）。两次 MiMo 实测请求各触发一次 `external_directory` 拦截，`metadata` 为 `{filepath, parentDir}`，路径可直接读取；但审批对象的字段名与 SDK 类型不一致（`type`、`title`、`pattern` 均不存在，OpenCode 自身日志记为 `permission`、`patterns`），因此记录改为保存原文而非挑选字段。两次拦截后模型都按纠正提示改回了合法的 `Read` 外部调用，说明纠正路径本身有效。把动作直接转交 WorkBuddy 仍需按 `callID` 反查工具名与参数。检测过程也会记录 `nativeAttempts`：一次探针在通过的同时试图原生执行 `bash echo test`。客户端已取消的请求不再记为成功。
 
 仍然保留的判断：文本回复本身是合法结果（WorkBuddy 可能只是提问），因此 `calls: 0` 不撤销模型资格，只改变显示与记录；把"原生被拦且无动作"升级为失败是单独的决策，尚未实施。
+
+
+## 请求进行中可见（2026-09-26）
+
+一次真实调用等待 5 分 06 秒后由用户取消：上游在第 92 秒报 `AI_APICallError: Cannot connect to API: The socket connection was closed unexpectedly`，OpenCode 在内部重试，桥全程只看到"没有返回"。取消后 `status.json` 未被写入，说明"取消不记成功"的修复生效，但失败与取消同样不可见——面板仍显示上一次成功结果。
+
+现在桥会订阅 OpenCode 的 `GET /event`：`session.status` 的 `retry`（含 `attempt`、上游消息）、`busy`、`idle`，以及 `session.error`、`message.part.updated`、`permission.updated` 会按会话匹配到正在进行的请求，写入 `status.json` 的 `activity`（模型、已等待时长、距上次事件时长、重试次数、错误）。控制面板服务行显示"等待上游 · 第 N 次重试"，托盘首项显示"请求中：模型 · N 秒"，模型列表中的该模型标记为"请求中"。请求结束或取消时条目立即移除。
+
+事件流只在存在进度回调时启动，按 1 秒退避重连；运行时停止时关闭。上游挂起时仍没有硬超时——这是 `82a9670` 的既定取舍，改用"可见的等待"而不是打断慢模型。
