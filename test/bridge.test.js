@@ -430,7 +430,27 @@ test('a malformed response envelope gets one format-only correction before tools
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
 });
 
-test('format correction is bounded and never retries unsafe or invalid tool calls', async () => {
+test('a malformed call entry gets the same one format correction as a malformed envelope', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  const sent = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: 'repair-call' };
+    if (route.endsWith('/message')) {
+      sent.push(payload);
+      return sent.length === 1
+        ? { info: { structured: { content: 'broken', calls: [null] } }, parts: [] }
+        : { info: { structured: { content: '', calls: [{ name: 'write_file', arguments: { path: 'x' } }] } }, parts: [] };
+    }
+    return [];
+  };
+  const result = await backend.complete(request);
+  assert.equal(sent.length, 2, 'One malformed call entry must not cost the whole turn');
+  assert.match(sent[1].parts[0].text, /No external tool has been executed/);
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+});
+
+test('format correction is bounded and never retries native activity or truncation', async () => {
   for (const kind of ['malformed', 'unlisted', 'native', 'truncated']) {
     const backend = new Backend('http://unused', 'test');
     let calls = 0;
@@ -445,7 +465,7 @@ test('format correction is bounded and never retries unsafe or invalid tool call
       return [];
     };
     await assert.rejects(backend.complete(prepare(body, models)));
-    assert.equal(calls, kind === 'malformed' ? 2 : 1);
+    assert.equal(calls, ['malformed', 'unlisted'].includes(kind) ? 2 : 1);
   }
 });
 

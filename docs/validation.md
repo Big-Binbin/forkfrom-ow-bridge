@@ -97,3 +97,10 @@ Space Bunny 的一次真实调用被 WorkBuddy 报错 `Invalid model response en
 同一 bug 形态的另外两处：`{"content":null,"calls":[]}` 会落到 `Invalid model response envelope`；而 `{"content":"…","calls":null,"reasoning":"…"}` 只因为多带一个字段就不再满足归一化条件，同样硬失败。两者都是模型给出了合法语义却被报成格式错误，与上面那条遗漏 `StructuredOutput` 同源。
 
 归一化改为"两个字段互相补默认值"：`calls` 为空（`null` 或缺失）且 `content` 是字符串时，`calls` 取 `[]`；`content` 为空且 `calls` 是数组时，`content` 取 `''`。因此"只有一边缺"的两种写法都被接受，无害的多余字段（如 `reasoning`）不再影响归一化；而两者都缺（`{}`）仍然非法——那等于什么都没说。防线保留在"工具调用被拍平进信封"这一种形状上：`{"content":"x","name":"write_file","arguments":{}}` 继续报错，否则那个动作会被当成纯文本静默丢掉（这条由已有测试锁定）。落空时的报错现在带上形状（如 `content=number, calls=array`），不再只有一句含糊的 `Invalid model response envelope`。
+
+
+## 格式纠偏也覆盖坏掉的工具调用项（2026-09-26）
+
+Space Bunny 的一轮请求在跑了约 5 分钟（Edit ×5、Bash ×3、Read 全部成功）之后以 `Invalid tool call` 失败：模型交出的 `calls` 数组里有一个元素不是对象。该错误此前不进入格式纠偏——`complete()` 只对 `invalid_model_output` 重试一次——于是一个笔误级别的偏差作废了整轮工作，用户必须重新催一次。会话随请求结束被删除，原始报文已无法恢复（留存的全部 `calls` 数组形状都是正常的）。
+
+现在格式纠偏覆盖两类：整个信封不合法（`invalid_model_output`）与工具调用项不合法（`invalid_tool_call`），都只重试一次。原生动作（`native_tool_activity`）与输出截断（`output_truncated`）仍然不重试。回归测试锁定两点：第一次交 `{"calls":[null]}`、第二次交合法信封时必须成功；始终返回坏调用的假服务器仍以失败结束，且总共只请求两次。

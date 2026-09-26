@@ -255,7 +255,11 @@ export class Backend {
         let message;
         try { message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request); }
         catch (error) {
-          if (attempt || request.chatOnly || error.code !== 'invalid_model_output' || signal?.aborted) throw error;
+          // One format-only correction, whether the whole envelope or a single tool call entry
+          // was wrong: both are slips the model fixes once it is told the exact shape, and
+          // failing them threw away a long turn's work. Native activity and truncation never
+          // reach this point as format errors and are still not retried.
+          if (attempt || request.chatOnly || !['invalid_model_output', 'invalid_tool_call'].includes(error.code) || signal?.aborted) throw error;
           payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
           continue;
         }
