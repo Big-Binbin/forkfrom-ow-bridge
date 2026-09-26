@@ -262,7 +262,9 @@ export class Backend {
           const error = response.info.error;
           throw new BridgeError(error.data?.message || error.message || error.name || 'Model request failed', error.data?.statusCode || 502, 'model_error');
         }
-        if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || p.tool !== 'StructuredOutput') && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
+        // 'invalid' is how OpenCode marks a call whose arguments failed to parse: nothing executed,
+        // so it belongs to the format path (correction, then translation), not to native activity.
+        if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || !['StructuredOutput', 'invalid'].includes(p.tool)) && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
         if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
         // The envelope arrives one of three ways: OpenCode's structured field, the completed
         // StructuredOutput call this adapter asks for, or plain text. Reading only the first
@@ -270,9 +272,19 @@ export class Backend {
         const structuredPart = (response.parts || []).find(p => p.type === 'tool' && p.tool === 'StructuredOutput' && p.state?.status === 'completed' && p.state?.input);
         const envelope = response.info?.structured ?? structuredPart?.state?.input;
         const text = envelope !== undefined ? JSON.stringify(envelope) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
-        if (!text.trim()) throw new BridgeError(request.chatOnly ? 'Model returned no text' : '模型没有返回信封：structured、已完成的 StructuredOutput 调用、文本 part 三者都为空', 502, request.chatOnly ? 'empty_response' : 'invalid_model_output');
         let message;
-        try { message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request); }
+        try {
+          if (!text.trim()) {
+            // Name the real cause, and take the same path as any other unreadable reply: an empty
+            // envelope deserves the one correction and the translator just like a malformed one.
+            const unparsed = (response.parts || []).find(p => p.type === 'tool' && p.tool === 'invalid');
+            if (request.chatOnly) throw new BridgeError('Model returned no text', 502, 'empty_response');
+            throw new BridgeError(unparsed
+              ? `模型交的调用参数不是合法 JSON：${unparsed.state?.input?.error ?? 'no detail from the runtime'}`
+              : '模型没有返回信封：structured、已完成的 StructuredOutput 调用、文本 part 三者都为空', 502, 'invalid_model_output');
+          }
+          message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request);
+        }
         catch (error) {
           // One format-only correction, whether the whole envelope or a single tool call entry
           // was wrong: both are slips the model fixes once it is told the exact shape, and

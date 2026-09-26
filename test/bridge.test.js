@@ -1051,3 +1051,42 @@ test('a blocked native action that no table can express is translated into an ex
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
   assert.deepEqual(JSON.parse(result.choices[0].message.tool_calls[0].function.arguments), { path: 'notes.txt' });
 });
+
+test('a call whose arguments failed to parse is a format problem, not native activity', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/big-pickle';
+  const messages = new Map();
+  let sessions = 0;
+  const unparsed = { type: 'tool', tool: 'invalid', callID: 'call_bad', state: { status: 'completed',
+    input: { tool: 'StructuredOutput', error: 'Invalid input for tool StructuredOutput: JSON parsing failed: Text: {"content": "数据核对完毕", "invoke name=\\"calls": .' } } };
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') { sessions += 1; return { id: `ses_${sessions - 1}` }; }
+    if (route.endsWith('/message')) {
+      const id = route.split('/')[2];
+      messages.set(id, payload);
+      if (id === 'ses_0') return { info: {}, parts: [unparsed] };
+      return { parts: [{ type: 'text', text: '{"content":"ok","calls":[{"name":"write_file","arguments":{"path":"x"}}]}' }] };
+    }
+    return [];
+  };
+  const meta = {};
+  const result = await backend.complete(request, undefined, meta);
+  assert.equal(sessions, 2, 'The turn continues through the format path instead of being discarded');
+  assert.match(messages.get('ses_1').parts[0].text, /JSON parsing failed/, 'The translator receives the parse error as material');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+  assert.equal(meta.repaired.envelope.ok, true);
+});
+
+test('an unparsable call is never reported as unexpected native activity', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  let sessions = 0;
+  backend.request = async route => {
+    if (route === '/session') { sessions += 1; return { id: `ses_${sessions - 1}` }; }
+    if (route.endsWith('/message')) return { info: {}, parts: [{ type: 'tool', tool: 'invalid', callID: 'call_bad', state: { status: 'completed', input: { error: 'JSON parsing failed' } } }] };
+    return [];
+  };
+  await assert.rejects(backend.complete(request, undefined, {}),
+    error => error.code === 'invalid_model_output' && /不是合法 JSON/.test(error.message));
+});

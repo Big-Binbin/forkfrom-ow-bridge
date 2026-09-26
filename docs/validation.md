@@ -118,3 +118,18 @@ Space Bunny 的一轮请求在跑了约 5 分钟（Edit ×5、Bash ×3、Read �
 - **留痕**：结果记入 `status.json` 的 `repaired: { envelope|action: { ok, model, ms, reason } }`，面板详情显示"这一轮由格式兜底救回"。没有这个字段就无法区分"真修好了"和"掩盖了问题"。
 
 回归测试覆盖三种情形：不可读信封经翻译后必须成功（并确认翻译跑在独立会话、用的是 `buddy-chat`）；翻译给出清单外的工具名必须被拒且报原始错误；静态表映射不出的被拦动作必须被翻译成合法外部调用并带 `meta.handoff`。
+
+
+## 参数解析失败的调用被误判成原生活动（2026-09-26）
+
+Big Pickle 的一轮请求跑了约 3 分钟，最后以 `Unexpected native tool activity; response rejected` 失败，而记录显示 `nativeAttempts: 0`——桥一次审批都没看到。恢复的数据给出了原因：
+
+```json
+{"type":"tool","tool":"invalid","callID":"call_function_…",
+ "state":{"status":"completed","input":{"tool":"StructuredOutput",
+   "error":"Invalid input for tool StructuredOutput: JSON parsing failed: Text: {\"content\": \"数据全部核对完毕…\", \"invoke name=\"calls\": .\nError message: JSON Parse error: Unexpected EOF"}}}
+```
+
+模型把 Anthropic 风格的调用语法混进了信封（`invoke name="calls"`），JSON 提前结束；OpenCode 因此把这个调用记为工具名 `invalid`——**参数没解析成功，什么都没执行**。而"意外原生活动"那道检查只豁免 `StructuredOutput`，看到 `invalid` 就当作模型偷偷跑了原生工具，直接把整轮判死，还报了一个与真实原因无关的错误。
+
+现在 `invalid` 与 `StructuredOutput` 一样被豁免；当响应里只有这种坏调用、没有可用文本时，报错改为如实说明"模型交的调用参数不是合法 JSON"（`invalid_model_output`），于是**纠正重试与新加的格式兜底都能接管**。注意 OpenCode 把原始文本截断在错误消息里（本次仅 249 字符），`calls` 的正文已丢失，所以这一类的兜底通常只能恢复文本内容，真正的动作要靠纠正重试让模型重发。回归测试锁定：坏调用必须走格式路径并交由兜底（且兜底收到的材料里含该解析错误），而不再报 `native_tool_activity`。
