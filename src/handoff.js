@@ -1,3 +1,5 @@
+import { BridgeError } from './protocol.js';
+
 // The external client owns execution. When the model tries to act locally, the blocked
 // action is handed over as an external call instead of asking the model to restate it:
 // restating is exactly the step models fail, and it costs a full extra upstream turn.
@@ -73,4 +75,23 @@ export function handoffInput(action, permission) {
 export function rejectFeedback(native, reason) {
   return `Native tool "${native}" was blocked: ${reason}. Native execution is forbidden; the external client owns execution. `
     + 'Return the requested external action inside the calls array using StructuredOutput. The external client will execute it and supply results. Do not call any other native tools.';
+}
+
+// A translated action is not trusted: the receiver's schema decides, exactly as it does for the
+// static table above. Same rules, so a translation can never widen what may be executed.
+export function validateAction(candidate, tools = []) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
+    throw new BridgeError('Translated action is not an object', 502, 'invalid_tool_call');
+  const spec = tools.map(tool => tool?.function).find(fn => fn?.name && fn.name.toLowerCase() === String(candidate.name ?? '').toLowerCase());
+  if (!spec) throw new BridgeError('Translated action names a tool the receiver did not offer', 502, 'invalid_tool_call');
+  const args = candidate.arguments ?? {};
+  if (typeof args !== 'object' || Array.isArray(args))
+    throw new BridgeError('Translated action arguments are not an object', 502, 'invalid_tool_call');
+  const properties = spec.parameters?.properties ?? {};
+  for (const key of Object.keys(args)) if (!Object.hasOwn(properties, key))
+    throw new BridgeError(`Translated action sets an argument the receiver does not declare: ${key}`, 502, 'invalid_tool_call');
+  const required = Array.isArray(spec.parameters?.required) ? spec.parameters.required : [];
+  if (!required.every(key => args[key] !== undefined && args[key] !== null && args[key] !== ''))
+    throw new BridgeError('Translated action misses a required argument', 502, 'invalid_tool_call');
+  return { name: spec.name, arguments: args };
 }

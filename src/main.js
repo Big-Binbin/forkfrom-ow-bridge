@@ -50,6 +50,16 @@ const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
 const validated = new Set();
 const usableModels = () => models.filter(m => validated.has(m.id) && state.modelResults[m.id]?.ok === true).map(m => ({ ...m, chatOnly: state.modelResults[m.id]?.chatOnly === true }));
 const publishedModels = usableModels;
+// Translation runs a second model whose only job is the shape. Detection never translates: a probe
+// must measure the model itself, not what the translator can rescue.
+const TRANSLATOR_ORDER = ['opencode/big-pickle', 'opencode/nemotron-3.5-lightning-free', 'opencode/space-bunny-free', 'opencode/mimo-v2.6-flash-free'];
+const attachTranslator = backend => {
+  backend.translator = failed => {
+    const usable = usableModels().map(model => model.id).filter(id => id !== failed);
+    return TRANSLATOR_ORDER.find(id => usable.includes(id)) ?? usable[0] ?? null;
+  };
+  return backend;
+};
 let syncWrites = Promise.resolve();
 let modelsFile = process.platform === 'win32'
   ? await resolveModelsFile({ saved: settings.workBuddyModelsFile })
@@ -129,7 +139,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         if (stopping) break;
         update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
-        const meta = {};
+        const meta = { probe: true };
         const deadline = new AbortController();
         let timedOut = false;
         const timer = setTimeout(() => { timedOut = true; deadline.abort(); }, PROBE_TIMEOUT);
@@ -181,7 +191,7 @@ async function refresh(restartRuntime = false, useSystemProxy = state.useSystemP
   update({ phase: 'reading', message: '正在读取免费模型…', models: [], availableModels: [] });
   refreshing = (async () => {
     if (restartRuntime) {
-      const next = await startBackend(binary, dataDir, log, proxyEnv);
+      const next = attachTranslator(await startBackend(binary, dataDir, log, proxyEnv));
       if (stopping) { await next.stop(); return; }
       const old = runtime;
       runtime = next;
@@ -260,7 +270,7 @@ try {
     status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });
-  runtime = await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy));
+  runtime = attachTranslator(await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy)));
   watchRuntime(runtime);
   // Confirm this runtime has the dedicated agent, not a user's build agent.
   const agents = await runtime.backend.request('/agent');

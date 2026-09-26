@@ -21,6 +21,7 @@ export function withRequestMeta(result, meta = {}) {
   if (Number.isInteger(meta.steps)) result.steps = meta.steps;
   if (typeof meta.handoff === 'string') result.handoff = meta.handoff;
   if (meta.handoffCheck) result.handoffCheck = meta.handoffCheck;
+  if (meta.repaired) result.repaired = meta.repaired;
   return result;
 }
 

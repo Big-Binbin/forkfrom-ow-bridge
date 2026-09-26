@@ -1,5 +1,6 @@
 import { BridgeError, decode, completion } from './protocol.js';
-import { buildHandoff, handoffInput, rejectFeedback } from './handoff.js';
+import { buildHandoff, handoffInput, rejectFeedback, validateAction } from './handoff.js';
+import { rawMaterial, repair } from './repair.js';
 import { request as httpRequest } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -28,7 +29,7 @@ export function shrinkPermission(value, limit = 400) {
 
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
-    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map() });
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), translator: null });
   }
   headers() {
     return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
@@ -152,7 +153,11 @@ export class Backend {
     const action = callID ? await this.blockedAction(callID, signal) : null;
     const native = action?.tool ?? (p.metadata?.command ? 'bash' : null);
     const handoff = native ? buildHandoff({ native, input: handoffInput(action, p), tools: request.tools }) : null;
-    if (!handoff) meta.handoffCheck = { native: native ?? null, offeredTools: request.tools.length, detail: action?.failure ?? 'arguments incomplete for the external schema' };
+    if (!handoff) {
+      meta.handoffCheck = { native: native ?? null, offeredTools: request.tools.length, detail: action?.failure ?? 'arguments incomplete for the external schema' };
+      // The action exists and only its expression is missing: keep it for the translator.
+      if (native) meta.handoffMiss = { native, input: handoffInput(action, p), offeredTools: request.tools.length };
+    }
     if (handoff) {
       await this.reject(p, 'This native action is executed by the external client instead.', signal).catch(() => {});
       return { handoff };
@@ -173,6 +178,20 @@ export class Backend {
     if (!result.length) throw new Error('No free text models found; existing list preserved');
     return result;
   }
+  // One bounded job for a second model: turn the material into the shape the receiver expects.
+  // The result is validated by the receiver's own rules, so a translation can never widen what is
+  // allowed; anything else falls back to the original error.
+  translate(request, shape, material, meta, blocked, signal) {
+    const deadline = AbortSignal.timeout(20000);
+    return repair({
+      complete: inner => this.complete(inner, signal ? AbortSignal.any([deadline, signal]) : deadline, {}),
+      translator: this.translator, request, shape, material, blocked, meta, log: this.log,
+      validate: shape === 'action'
+        ? candidate => validateAction(candidate, request.tools)
+        : candidate => decode(JSON.stringify(candidate), request),
+    });
+  }
+
   async complete(request, signal, meta = {}) {
     meta.steps = 0; meta.nativeAttempts = 0; meta.permissions = [];
     // Native tools require approval; the bridge aborts any attempted native action.
@@ -259,9 +278,32 @@ export class Backend {
           // was wrong: both are slips the model fixes once it is told the exact shape, and
           // failing them threw away a long turn's work. Native activity and truncation never
           // reach this point as format errors and are still not retried.
-          if (attempt || request.chatOnly || !['invalid_model_output', 'invalid_tool_call'].includes(error.code) || signal?.aborted) throw error;
-          payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
-          continue;
+          if (request.chatOnly || signal?.aborted || !['invalid_model_output', 'invalid_tool_call'].includes(error.code)) throw error;
+          if (!attempt) {
+            payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
+            continue;
+          }
+          // Still unreadable: hand the material to the translator before giving up. Detection never
+          // translates, so a probe keeps measuring the model rather than the translator's help.
+          if (!meta.probe) {
+            const translated = await this.translate(request, 'envelope', rawMaterial(response), meta, null, signal);
+            if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
+          }
+          throw error;
+        }
+        // The model tried to act natively, the table could not express it, and it then answered
+        // with text. Translate the blocked action and return it, exactly as a handoff would.
+        if (!message.tool_calls?.length && meta.handoffMiss && !meta.probe) {
+          const rescued = await this.translate(request, 'action', rawMaterial(response), meta, meta.handoffMiss, signal);
+          if (rescued) {
+            await this.request(`${route}/abort`, 'POST', undefined, undefined, 5000).catch(() => {});
+            meta.calls = 1;
+            meta.handoff = rescued.name;
+            successful = true;
+            return completion(request.model.id, { role: 'assistant', content: null,
+              tool_calls: [{ id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function',
+                function: { name: rescued.name, arguments: JSON.stringify(rescued.arguments) } }] }, undefined);
+          }
         }
         meta.calls = message.tool_calls?.length ?? 0;
         successful = true;

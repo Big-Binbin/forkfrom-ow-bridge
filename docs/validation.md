@@ -104,3 +104,17 @@ Space Bunny 的一次真实调用被 WorkBuddy 报错 `Invalid model response en
 Space Bunny 的一轮请求在跑了约 5 分钟（Edit ×5、Bash ×3、Read 全部成功）之后以 `Invalid tool call` 失败：模型交出的 `calls` 数组里有一个元素不是对象。该错误此前不进入格式纠偏——`complete()` 只对 `invalid_model_output` 重试一次——于是一个笔误级别的偏差作废了整轮工作，用户必须重新催一次。会话随请求结束被删除，原始报文已无法恢复（留存的全部 `calls` 数组形状都是正常的）。
 
 现在格式纠偏覆盖两类：整个信封不合法（`invalid_model_output`）与工具调用项不合法（`invalid_tool_call`），都只重试一次。原生动作（`native_tool_activity`）与输出截断（`output_truncated`）仍然不重试。回归测试锁定两点：第一次交 `{"calls":[null]}`、第二次交合法信封时必须成功；始终返回坏调用的假服务器仍以失败结束，且总共只请求两次。
+
+
+## 格式兜底：失败时交给另一路模型重排（2026-09-26）
+
+"出错就整轮作废"的根因是：桥对形状只有一条机械路径，遇到没预想到的写法就直接报错。现在加了一条**只在失败时触发、只触发一次**的镜像路径：
+
+- **触发**：一次纠正重试之后信封仍不合法（`invalid_model_output` / `invalid_tool_call`）；或模型尝试原生动作、静态表映射不出来、随后又只回了文本（`meta.handoffMiss`）。
+- **材料**：模型这一轮产出的全部内容——`info.structured`、所有 part（含 `StructuredOutput` 的 `state.input`、`status`、文本）、`finish`、`error.name`，加上被拦下的原生动作（name + 参数）与接收方工具清单（名称 + schema）。全部截断到有界长度（`src/repair.js`）。
+- **执行**：另起一路会话，`agent: buddy-chat`（纯文本任务，不给工具），用 `REPAIR_SYSTEM` 要求它**只重排、不得发明**：不得凭空造动作、参数值或文件内容，材料里没有完整动作就返回空 `calls`。
+- **校验**：结果拿回后仍走**接收方自己的规则**——信封用同一个 `decode`，动作用 `handoff.js` 新增的 `validateAction`（工具名必须在本次请求的清单里、参数必须落在 schema 内、必填必须齐全）。校验不过就丢弃，报**原始错误**，绝不循环。
+- **不触发**：检测（`meta.probe`）从不兜底——探针必须测模型本身的能力，而不是翻译的功劳；额度/限流/访问受限/超时等上游失败也不触发。
+- **留痕**：结果记入 `status.json` 的 `repaired: { envelope|action: { ok, model, ms, reason } }`，面板详情显示"这一轮由格式兜底救回"。没有这个字段就无法区分"真修好了"和"掩盖了问题"。
+
+回归测试覆盖三种情形：不可读信封经翻译后必须成功（并确认翻译跑在独立会话、用的是 `buddy-chat`）；翻译给出清单外的工具名必须被拒且报原始错误；静态表映射不出的被拦动作必须被翻译成合法外部调用并带 `meta.handoff`。

@@ -978,3 +978,76 @@ test('a null envelope field defaults from the other instead of failing the forma
     /Invalid model response envelope/,
     'a tool call flattened into the envelope must never pass as a plain text answer');
 });
+
+test('an unreadable envelope is translated once and used when the receiver accepts it', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/big-pickle';
+  const messages = new Map();
+  let sessions = 0;
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') { sessions += 1; return { id: `ses_${sessions - 1}` }; }
+    if (route.endsWith('/message')) {
+      const id = route.split('/')[2];
+      messages.set(id, payload);
+      if (id === 'ses_0') return { info: { structured: { content: 5, calls: [] } }, parts: [] };
+      return { parts: [{ type: 'text', text: 'Here you go:\n```json\n{"content":"ok","calls":[{"name":"write_file","arguments":{"path":"x"}}]}\n```' }] };
+    }
+    return [];
+  };
+  const meta = {};
+  const result = await backend.complete(request, undefined, meta);
+  assert.equal(sessions, 2, 'The translator runs in its own session');
+  assert.equal(messages.get('ses_1').model.modelID, 'big-pickle');
+  assert.equal(messages.get('ses_1').agent, 'buddy-chat', 'Translation is a text job, never a tool job');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+  assert.equal(meta.repaired.envelope.ok, true);
+  assert.equal(meta.repaired.envelope.model, 'opencode/big-pickle');
+});
+
+test('a translation the receiver rejects leaves the original error untouched', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/big-pickle';
+  const sessions = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') { const id = `ses_${sessions.length}`; sessions.push({ id, payload }); return { id }; }
+    if (route.endsWith('/message')) {
+      if (route.startsWith('/session/ses_0/')) return { info: { structured: { content: 5, calls: [] } }, parts: [] };
+      return { parts: [{ type: 'text', text: '{"content":"ok","calls":[{"name":"rm_rf","arguments":{}}]}' }] };
+    }
+    return [];
+  };
+  const meta = {};
+  await assert.rejects(backend.complete(request, undefined, meta), error => error.code === 'invalid_model_output');
+  assert.equal(meta.repaired.envelope.ok, false, 'An out-of-list translation must never be used');
+  assert.equal(meta.repaired.envelope.reason, 'invalid_tool_call');
+});
+
+test('a blocked native action that no table can express is translated into an external call', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/big-pickle';
+  const sessions = [];
+  let answered = false;
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') { const id = `ses_${sessions.length}`; sessions.push({ id, payload }); return { id }; }
+    if (route.endsWith('/permission')) {
+      if (answered) return [];
+      answered = true;
+      return [{ id: 'per_1', sessionID: 'ses_0', permission: 'bash', patterns: ['*'], metadata: { command: 'ls -la' } }];
+    }
+    if (route.endsWith('/message')) {
+      if (route.startsWith('/session/ses_0/')) return { info: { structured: { content: '我先看看', calls: [] } }, parts: [] };
+      return { parts: [{ type: 'text', text: '{"name":"write_file","arguments":{"path":"notes.txt"}}' }] };
+    }
+    return [];
+  };
+  const meta = {};
+  const result = await backend.complete(request, undefined, meta);
+  assert.equal(meta.handoffCheck.native, 'bash', 'The table could not express a shell command for this receiver');
+  assert.equal(meta.repaired.action.ok, true);
+  assert.equal(meta.handoff, 'write_file');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
+  assert.deepEqual(JSON.parse(result.choices[0].message.tool_calls[0].function.arguments), { path: 'notes.txt' });
+});
