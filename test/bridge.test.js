@@ -783,3 +783,41 @@ test('an unmappable native action is refused by name and the request still compl
     assert.ok(!events.includes('POST /session/ses_unmapped/abort'));
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('a pending call takes its arguments from the approval metadata', async () => {
+  const { handoffInput, buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  // A pending tool part reports no input; the path is only in the approval metadata.
+  const input = handoffInput({ tool: 'read', input: {} }, { metadata: { filepath: '/tmp/a.md', parentDir: '/tmp' } });
+  assert.deepEqual(input, { filePath: '/tmp/a.md' });
+  assert.deepEqual(buildHandoff({ native: 'read', input, tools }), { name: 'Read', arguments: { file_path: '/tmp/a.md' } });
+  // Real arguments win over the metadata fallback.
+  assert.deepEqual(handoffInput({ input: { filePath: '/real.md' } }, { metadata: { filepath: '/other.md' } }), { filePath: '/real.md' });
+  assert.deepEqual(handoffInput(null, { metadata: { command: 'ls /tmp' } }), { command: 'ls /tmp' });
+});
+
+test('a bash approval without a readable tool part is still handed over', async () => {
+  const events = []; let phase = 'idle';
+  const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } };
+  const fake = http.createServer(async (req, res) => {
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_meta"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking'
+      ? [{ id: 'per_meta', sessionID: 'ses_meta', permission: 'external_directory', metadata: { command: 'ls /tmp' }, tool: { callID: 'native_meta' } }] : []));
+    if (req.url === '/session/ses_meta/message' && req.method === 'GET') return res.end('[]');
+    if (req.url.endsWith('/reply')) { phase = 'replied'; return res.end('true'); }
+    if (req.url === '/session/ses_meta/message') { phase = 'asking'; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
+    const call = result.choices[0].message.tool_calls[0];
+    assert.equal(call.function.name, 'Bash');
+    assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp' });
+    assert.ok(events.includes('POST /session/ses_meta/abort'));
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});

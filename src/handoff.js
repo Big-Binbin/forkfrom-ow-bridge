@@ -40,6 +40,22 @@ export function buildHandoff({ native, input = {}, tools = [] }) {
   return null;
 }
 
+// While a call is still pending, OpenCode reports its arguments through the approval
+// metadata, not through the tool part, whose input is empty until the call runs. The tool
+// part wins when it has them; the metadata only fills what is missing.
+export function handoffInput(action, permission) {
+  const input = { ...(action?.input ?? {}) };
+  const metadata = permission?.metadata ?? {};
+  const fallback = {
+    command: metadata.command,
+    filePath: metadata.filepath ?? metadata.filePath ?? metadata.path,
+  };
+  for (const [key, value] of Object.entries(fallback)) {
+    if (input[key] === undefined && typeof value === 'string' && value.trim()) input[key] = value;
+  }
+  return input;
+}
+
 // A rejection must name the tool and the reason: a silent or generic refusal leaves the
 // model guessing, which is what produced repeated native attempts in the first place.
 export function rejectFeedback(native, reason) {
