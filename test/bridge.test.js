@@ -573,3 +573,13 @@ test('a cancelled client request is never recorded as a completed success', asyn
     assert.deepEqual(recorded, [], 'A cancelled request must not be recorded as a success');
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+test('captured approval payloads keep their shape without unbounded file content', async () => {
+  const { shrinkPermission } = await import('../src/backend.js');
+  const shrunk = shrinkPermission({ id: 'per_1', permission: 'external_directory', patterns: ['/tmp/*'],
+    metadata: { filepath: '/tmp/a.md', content: 'x'.repeat(5000) } }, 20);
+  assert.equal(shrunk.permission, 'external_directory');
+  assert.deepEqual(shrunk.patterns, ['/tmp/*']);
+  assert.equal(shrunk.metadata.filepath, '/tmp/a.md');
+  assert.equal(shrunk.metadata.content, `${'x'.repeat(20)}…[5000 chars]`);
+});

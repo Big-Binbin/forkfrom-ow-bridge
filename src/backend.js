@@ -16,6 +16,14 @@ export function freeModels(providers) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// Approval payloads can carry file content; keep the shape but bound long strings.
+export function shrinkPermission(value, limit = 400) {
+  if (typeof value === 'string') return value.length > limit ? `${value.slice(0, limit)}…[${value.length} chars]` : value;
+  if (Array.isArray(value)) return value.map(item => shrinkPermission(item, limit));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, shrinkPermission(item, limit)]));
+  return value;
+}
+
 export class Backend {
   constructor(base, password, timeout) {
     Object.assign(this, { base, password, timeout });
@@ -67,8 +75,9 @@ export class Backend {
           if (!p.tool?.callID || rejected.size >= 2) throw new BridgeError('OpenCode repeatedly attempted native actions; execution was not approved', 502, 'native_tool_activity');
           rejected.add(p.tool.callID);
           meta.nativeAttempts += 1;
-          // Keep the raw approval request so a blocked native action stays diagnosable.
-          if (meta.permissions.length < 5) meta.permissions.push({ id: p.id, type: p.type, title: p.title, pattern: p.pattern, callID: p.tool.callID, metadata: p.metadata });
+          // Keep the approval request verbatim: OpenCode's field names differ from the SDK
+          // types, so cherry-picking fields silently loses the useful ones.
+          if (meta.permissions.length < 5) meta.permissions.push(shrinkPermission(p));
           await this.request(`/permission/${encodeURIComponent(p.id)}/reply`, 'POST', {
             reply: 'reject', message: 'Native execution is forbidden. Return the requested external action inside the calls array using StructuredOutput. The external client will execute it and supply results. Do not call any other native tools.',
           }, guardSignal, 5000);

@@ -99,15 +99,16 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         if (stopping) break;
         update({ ...(reveal ? { models: [...state.models, model] } : {}), probe: { running: true, current: model.id, pending: [...pending] } });
         const started = performance.now();
+        const meta = {};
         try {
           if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
           const token = randomBytes(8).toString('hex');
           const tools = [{ type: 'function', function: { name: 'bridge_probe', description: 'Return the supplied token. This is a capability test with no side effects.', parameters: { type: 'object', properties: { token: { type: 'string', const: token } }, required: ['token'], additionalProperties: false } } }];
-          const response = await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: `Call bridge_probe with token ${token}.` }], tools, tool_choice: 'required', parallel_tool_calls: false }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));
+          const response = await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: `Call bridge_probe with token ${token}.` }], tools, tool_choice: 'required', parallel_tool_calls: false }, models), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]), meta);
           const calls = response.choices?.[0]?.message?.tool_calls;
           if (calls?.length !== 1 || calls[0].function?.name !== 'bridge_probe' || JSON.parse(calls[0].function.arguments).token !== token)
             throw new BridgeError('Tool capability check failed', 502, 'invalid_tool_call');
-          await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe');
+          await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
         } catch (e) {
           const formatUnsupported = ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity'].includes(e.code) || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(e.message);
           if (!stopping && formatUnsupported) {
@@ -118,7 +119,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
             } catch (chatError) {
               if (!stopping) await record(model.id, false, chatError.message, chatError.status, chatError.code, Math.round(performance.now() - started), 'probe');
             }
-          } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe');
+          } else if (!stopping) await record(model.id, false, e.name === 'TimeoutError' ? 'Model probe timed out' : e.message, e.status, e.code, Math.round(performance.now() - started), 'probe', undefined, meta);
         }
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });

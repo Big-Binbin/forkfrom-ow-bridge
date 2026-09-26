@@ -40,6 +40,6 @@
 
 MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 WorkBuddy 没有任何动作，其工作目录 `~/WorkBuddy/2026-09-26-05-21-06/` 为空。OpenCode 日志显示该请求内部跑了四轮模型调用，并在 06:59:31 请求原生访问 `/Users/Zhuanz/WorkBuddy/2026-09-26-05-21-06/*`（`permission=external_directory`）；被权限守卫拒绝后，模型仍以空动作结束并通过了格式校验，因此 `ok` 被置为 true。紧随其后的第二次请求在 07:08:54 被 WorkBuddy 取消，取消路径此前没有任何记录。
 
-原因是 `ok` 只代表产出了格式合法的信封。现在请求结果额外记录 `calls`、`nativeAttempts`、`steps`：只回复文本而没有动作时标记 `noAction`，界面显示"可用 · 未产生动作"；被拦截的原生审批请求原文存入 `status.json` 的 `lastPermission`，用于确认其 `metadata` 是否足以支持把动作直接转交 WorkBuddy。客户端已取消的请求不再记为成功。
+原因是 `ok` 只代表产出了格式合法的信封。现在请求结果额外记录 `calls`、`nativeAttempts`、`steps`：只回复文本而没有动作时标记 `noAction`，界面显示"可用 · 未产生动作"；被拦截的原生审批请求原文存入 `status.json` 的 `lastPermission`（超长字符串截断）。两次 MiMo 实测请求各触发一次 `external_directory` 拦截，`metadata` 为 `{filepath, parentDir}`，路径可直接读取；但审批对象的字段名与 SDK 类型不一致（`type`、`title`、`pattern` 均不存在，OpenCode 自身日志记为 `permission`、`patterns`），因此记录改为保存原文而非挑选字段。两次拦截后模型都按纠正提示改回了合法的 `Read` 外部调用，说明纠正路径本身有效。把动作直接转交 WorkBuddy 仍需按 `callID` 反查工具名与参数。检测过程也会记录 `nativeAttempts`：一次探针在通过的同时试图原生执行 `bash echo test`。客户端已取消的请求不再记为成功。
 
 仍然保留的判断：文本回复本身是合法结果（WorkBuddy 可能只是提问），因此 `calls: 0` 不撤销模型资格，只改变显示与记录；把"原生被拦且无动作"升级为失败是单独的决策，尚未实施。
