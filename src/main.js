@@ -74,7 +74,7 @@ function syncPublished(published = publishedModels()) {
 }
 async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true, meta = {}) {
   if (stopping) return;
-  const result = withRequestMeta({ model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly }, meta, chatOnly);
+  const result = withRequestMeta({ model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly }, meta);
   // Keep the raw approval requests so a blocked native action stays diagnosable after the fact.
   const captured = Array.isArray(meta.permissions) && meta.permissions.length ? { lastPermission: { time: result.time, entries: meta.permissions } } : {};
   if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated'].includes(code)) {
@@ -140,7 +140,11 @@ function startProbes(modelID, reveal = false, autoImport = false) {
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
         } catch (cause) {
           const e = probeFailure(cause, timedOut);
-          if (!stopping && formatUnsupported(e)) {
+          if (!stopping && e.code === 'no_action') {
+            // Replying with text says the model works, not that it failed: it is usable for
+            // chat only, so it is published with tools disabled instead of being withdrawn.
+            await record(model.id, true, '探测时只返回文本、未产生动作；已按仅对话发布', undefined, 'chat_only', Math.round(performance.now() - started), 'probe', true);
+          } else if (!stopping && formatUnsupported(e)) {
             try {
               const chatModel = { ...model, chatOnly: true };
               await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(30000)]));

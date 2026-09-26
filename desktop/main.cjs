@@ -50,7 +50,7 @@ function publish() {
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
     { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
     ...(process.platform === 'win32' ? [{ label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
-    { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.noAction ? '可用 · 未产生动作' : state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
+    { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
     { type: 'separator' }, { label: '退出 Buddy Bridge', click: () => app.quit() },
   ]));
 }

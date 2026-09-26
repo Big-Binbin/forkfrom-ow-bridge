@@ -8,8 +8,8 @@ function label(model) {
   if (waiting(model.id)) return state.probe.current === model.id ? '检测中' : '等待检测';
   if ((state.activity || []).some(a => a.model === model.id)) return '请求中';
   const r = state.modelResults?.[model.id];
-  if (state.availableModels?.includes(model.id)) return r?.noAction ? '可用 · 未产生动作' : r?.chatOnly ? '可用 · 仅对话' : '可用';
-  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限', no_action: '无动作' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
+  if (state.availableModels?.includes(model.id)) return r?.chatOnly ? '可用 · 仅对话' : '可用';
+  return ({ timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' })[r?.category] || (r?.ok === false ? '不可用' : '待检测');
 }
 function rank(model) { return waiting(model.id) ? 1 : state.availableModels?.includes(model.id) ? 0 : state.modelResults?.[model.id]?.ok === false ? 2 : 1; }
 function timing(id) {
@@ -49,7 +49,6 @@ function renderDetails() {
   const add = (text, css = '') => $('details').append(element('p', css, text));
   if (r.chatOnly) add('已自动关闭工具调用；导入后仅支持普通对话。');
   if (Number.isInteger(r.nativeAttempts) && r.nativeAttempts > 0) add(`最近一次调用拦截了 ${r.nativeAttempts} 次本地执行尝试，动作必须由 WorkBuddy 执行。`, 'error-text');
-  if (r.noAction) add('最近一次调用只有文本回复、没有产生任何动作，WorkBuddy 不会执行任何操作。', 'error-text');
   if (Number.isInteger(r.calls) && r.calls > 0) add(`最近一次调用返回了 ${r.calls} 个动作。`);
   if (r.handoff) add(`最近一次调用把被拦下的本地动作转交成外部 ${r.handoff} 调用。`);
   add(`图片输入：${model.images ? '支持' : '不支持'}`);

@@ -40,9 +40,9 @@
 
 MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 WorkBuddy 没有任何动作，其工作目录 `~/WorkBuddy/2026-09-26-05-21-06/` 为空。OpenCode 日志显示该请求内部跑了四轮模型调用，并在 06:59:31 请求原生访问 `/Users/Zhuanz/WorkBuddy/2026-09-26-05-21-06/*`（`permission=external_directory`）；被权限守卫拒绝后，模型仍以空动作结束并通过了格式校验，因此 `ok` 被置为 true。紧随其后的第二次请求在 07:08:54 被 WorkBuddy 取消，取消路径此前没有任何记录。
 
-原因是 `ok` 只代表产出了格式合法的信封。现在请求结果额外记录 `calls`、`nativeAttempts`、`steps`：只回复文本而没有动作时标记 `noAction`，界面显示"可用 · 未产生动作"；被拦截的原生审批请求原文存入 `status.json` 的 `lastPermission`（超长字符串截断）。两次 MiMo 实测请求各触发一次 `external_directory` 拦截，`metadata` 为 `{filepath, parentDir}`，路径可直接读取；但审批对象的字段名与 SDK 类型不一致（`type`、`title`、`pattern` 均不存在，OpenCode 自身日志记为 `permission`、`patterns`），因此记录改为保存原文而非挑选字段。两次拦截后模型都按纠正提示改回了合法的 `Read` 外部调用，说明纠正路径本身有效。把动作直接转交 WorkBuddy 仍需按 `callID` 反查工具名与参数。检测过程也会记录 `nativeAttempts`：一次探针在通过的同时试图原生执行 `bash echo test`。客户端已取消的请求不再记为成功。
+原因是 `ok` 只代表产出了格式合法的信封。请求结果记录 `calls`、`nativeAttempts`、`steps`、`handoff` 作为"最近一次调用"的观测，但不参与能力判定。曾据此标记过 `noAction` 并显示"可用 · 未产生动作"，该标记已移除（2026-09-26）：任务收尾时只回文本是正常行为，一次工作的结果不该出现在能力标签上。被拦截的原生审批请求原文存入 `status.json` 的 `lastPermission`（超长字符串截断）。两次 MiMo 实测请求各触发一次 `external_directory` 拦截，`metadata` 为 `{filepath, parentDir}`，路径可直接读取；但审批对象的字段名与 SDK 类型不一致（`type`、`title`、`pattern` 均不存在，OpenCode 自身日志记为 `permission`、`patterns`），因此记录改为保存原文而非挑选字段。两次拦截后模型都按纠正提示改回了合法的 `Read` 外部调用，说明纠正路径本身有效。把动作直接转交 WorkBuddy 仍需按 `callID` 反查工具名与参数。检测过程也会记录 `nativeAttempts`：一次探针在通过的同时试图原生执行 `bash echo test`。客户端已取消的请求不再记为成功。
 
-仍然保留的判断：文本回复本身是合法结果（WorkBuddy 可能只是提问），因此 `calls: 0` 不撤销模型资格，只改变显示与记录；把"原生被拦且无动作"升级为失败是单独的决策，尚未实施。
+仍然保留的判断：文本回复本身是合法结果（WorkBuddy 可能只是提问），因此 `calls: 0` 既不撤销模型资格，也不改变显示；把"原生被拦且无动作"升级为失败是单独的决策，尚未实施。
 
 
 ## 请求进行中可见（2026-09-26）
@@ -58,11 +58,11 @@ MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 Work
 
 探针此前是 `tool_choice: "required"` + 单个 `bridge_probe` 工具 + 一句话，只验证传输与格式：模型被强制必须返回一个调用，因此必然通过。真实流量是 `tool_choice: auto`，此时"只回文本、不给动作"是合法返回。实测两轮真实请求正是该形态：16:19:36→16:21:14（98 秒）与 16:21:18→16:22:16（58 秒），均为 `calls: 0`、`nativeAttempts: 0`、`steps: 1`，界面表现为 WorkBuddy 无动作；同事后检查确认这两轮没有任何原生权限拦截，因此不是"被拦后断线"。
 
-现在探针改为：5 个真实命名的外部工具（Read/Write/Bash/Glob/WebSearch，各带必填参数）、不传 `tool_choice`、指令要求读取一个带随机 token 的文件。判定标准是"是否返回携带该 token 的 Read 调用"：只回文本记为 `no_action`（分类 `no_action`，界面显示"无动作"）并撤下；返回与请求不符的调用仍记 `invalid_tool_call`。
+现在探针改为：5 个真实命名的外部工具（Read/Write/Bash/Glob/WebSearch，各带必填参数）、不传 `tool_choice`、指令要求读取一个带随机 token 的文件。判定标准是"是否返回携带该 token 的 Read 调用"：只回文本的模型按**仅对话**发布（工具关闭，界面显示"可用 · 仅对话"），不再作为失败撤下——文本回复只说明它承担不了动作，不说明它不可用（2026-09-26 修正）；返回与请求不符的调用仍记 `invalid_tool_call`。
 
 超时也单独区分：探针此前依赖 `AbortSignal.any`，30 秒到点抛出的是 `AbortError`（"The operation was aborted"），被归为一般错误，界面因此不显示"检测超时"。现在探针自己持计时器，超时记为 `timeout`。探针在语义没命中时（`no_action`、动作与请求不符的 `probe_mismatch`）重试一次再判定，两次重试共用单个 60 秒预算，因此检测耗时不翻倍；格式不兼容与超时不重试。此举针对的是探针的随机性：Ling 3.0 Flash Fin Free 曾在一轮判为仅对话、下一轮直接通过。
 
-检测上限由 30 秒放宽到 60 秒（`src/probe.js` 的 `PROBE_TIMEOUT`）：30 秒会撤下偏慢但仍可用的模型（Nemotron 3.5 Lightning 连续两次被撤），代价是模型卡住时启动检测最多多花 60 秒。降级为"仅对话"只允许发生在**格式不兼容**时（`invalid_model_output`、`invalid_tool_call`，或上游明确报 `tool_choice` 仅支持 auto）。模型坚持本地执行（`native_tool_activity`）属于另一类失败，不再被降级：否则 WorkBuddy 会拿到一个永远不可能产生动作的"可用 · 仅对话"模型（Ling 3.0 Flash Fin Free 实测即为此例）。检测后的分类与面板标签由测试锁定：`no_action`→无动作、`timeout`→检测超时、`quota`→额度不足、`rate_limit`→请求受限、`access`→访问受限，其余失败回落为不可用。
+检测上限由 30 秒放宽到 60 秒（`src/probe.js` 的 `PROBE_TIMEOUT`）：30 秒会撤下偏慢但仍可用的模型（Nemotron 3.5 Lightning 连续两次被撤），代价是模型卡住时启动检测最多多花 60 秒。降级为"仅对话"只允许发生在**格式不兼容**时（`invalid_model_output`、`invalid_tool_call`，或上游明确报 `tool_choice` 仅支持 auto）。模型坚持本地执行（`native_tool_activity`）属于另一类失败，不再被降级：否则 WorkBuddy 会拿到一个永远不可能产生动作的"可用 · 仅对话"模型（Ling 3.0 Flash Fin Free 实测即为此例）。检测后的分类与面板标签由测试锁定：`timeout`→检测超时、`quota`→额度不足、`rate_limit`→请求受限、`access`→访问受限，其余失败回落为不可用；只回文本、未产生动作的模型按"可用 · 仅对话"发布。
 
 
 ## 拦截即转交（2026-09-26）

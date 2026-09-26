@@ -530,15 +530,13 @@ test('missing Write arguments reach WorkBuddy and its validation error returns t
   }
 });
 
-test('a text-only reply is never recorded as a plain success', async () => {
+test('a request result records observations without judging the model', async () => {
   const { withRequestMeta } = await import('../src/model-status.js');
-  const noAction = withRequestMeta({ model: 'x', ok: true, category: 'available' }, { tools: 3, calls: 0, nativeAttempts: 1, steps: 4 }, false);
-  assert.equal(noAction.noAction, true);
-  assert.equal(noAction.calls, 0);
-  assert.equal(noAction.nativeAttempts, 1);
-  assert.equal(noAction.steps, 4);
-  assert.equal(withRequestMeta({ ok: true }, { tools: 0, calls: 0 }, true).noAction, undefined, 'Chat-only replies never needed an external action');
-  assert.equal(withRequestMeta({ ok: true }, { tools: 3, calls: 2 }, false).noAction, undefined, 'Returned calls are a real action');
+  const result = withRequestMeta({ model: 'x', ok: true, category: 'available' }, { tools: 3, calls: 0, nativeAttempts: 1, steps: 4 });
+  assert.equal(result.calls, 0);
+  assert.equal(result.nativeAttempts, 1);
+  assert.equal(result.steps, 4);
+  assert.equal('noAction' in result, false, 'Capability labels come from detection, not from one work item');
 });
 
 test('request meta reaches the recorder with blocked native attempts', async () => {
@@ -660,7 +658,7 @@ test('detection requires an action, not just a valid envelope', async () => {
   assert.equal(timedOut.code, 'timeout');
   assert.equal(probeFailure(new Error('boom'), false).message, 'boom');
 
-  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'error', 'A text-only probe reply becomes chat-only, not its own category');
   assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
 });
 
@@ -668,10 +666,9 @@ test('every detection category has a label the panel can show', async () => {
   const fs = await import('node:fs/promises');
   const { modelResult } = await import('../src/model-status.js');
   const renderer = await fs.readFile(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
-  const tray = await fs.readFile(new URL('../desktop/main.cjs', import.meta.url), 'utf8');
-  const expected = { no_action: '无动作', timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' };
+  const expected = { timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' };
 
-  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'error', 'A text-only probe reply becomes chat-only, not its own category');
   assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
   assert.equal(modelResult(false, 'insufficient_quota', 429).category, 'quota');
   assert.equal(modelResult(false, 'Too many requests', 429).category, 'rate_limit');
@@ -680,7 +677,6 @@ test('every detection category has a label the panel can show', async () => {
 
   for (const [category, label] of Object.entries(expected))
     assert.match(renderer, new RegExp(`${category}: '${label}'`), `The panel must label ${category} as ${label}`);
-  assert.match(tray, /noAction \? '可用 · 未产生动作'/, 'The tray must show the no-action state');
   assert.match(renderer, /chatOnly \? '可用 · 仅对话'/, 'The panel must show the chat-only state');
 });
 
