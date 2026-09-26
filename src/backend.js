@@ -183,6 +183,8 @@ export class Backend {
   // allowed; anything else falls back to the original error.
   translate(request, shape, material, meta, blocked, signal) {
     const deadline = AbortSignal.timeout(20000);
+    // What the client would run is still decided by the client's own rules: a name it did not offer,
+    // or arguments that break its schema, are refused no matter how the translation was reached.
     return repair({
       complete: inner => this.complete(inner, signal ? AbortSignal.any([deadline, signal]) : deadline, {}),
       translator: this.translator, request, shape, material, blocked, meta, log: this.log,
@@ -298,7 +300,7 @@ export class Backend {
           // Still unreadable: hand the material to the translator before giving up. Detection never
           // translates, so a probe keeps measuring the model rather than the translator's help.
           if (!meta.probe) {
-            const translated = await this.translate(request, 'envelope', rawMaterial(response), meta, null, signal);
+            const translated = await this.translate(request, 'envelope', rawMaterial(response, request), meta, null, signal);
             if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
           }
           throw error;
@@ -306,7 +308,7 @@ export class Backend {
         // The model tried to act natively, the table could not express it, and it then answered
         // with text. Translate the blocked action and return it, exactly as a handoff would.
         if (!message.tool_calls?.length && meta.handoffMiss && !meta.probe) {
-          const rescued = await this.translate(request, 'action', rawMaterial(response), meta, meta.handoffMiss, signal);
+          const rescued = await this.translate(request, 'action', rawMaterial(response, request), meta, meta.handoffMiss, signal);
           if (rescued) {
             await this.request(`${route}/abort`, 'POST', undefined, undefined, 5000).catch(() => {});
             meta.calls = 1;

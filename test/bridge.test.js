@@ -1090,3 +1090,25 @@ test('an unparsable call is never reported as unexpected native activity', async
   await assert.rejects(backend.complete(request, undefined, {}),
     error => error.code === 'invalid_model_output' && /不是合法 JSON/.test(error.message));
 });
+
+test('the material carries the external conversation the translation must be grounded in', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/big-pickle';
+  const messages = new Map();
+  let sessions = 0;
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') { sessions += 1; return { id: `ses_${sessions - 1}` }; }
+    if (route.endsWith('/message')) {
+      const id = route.split('/')[2];
+      messages.set(id, payload);
+      if (id === 'ses_0') return { info: { structured: { content: 5, calls: [] } }, parts: [] };
+      return { parts: [{ type: 'text', text: '{"content":"ok","calls":[]}' }] };
+    }
+    return [];
+  };
+  await backend.complete(request, undefined, {});
+  const body_ = JSON.parse(messages.get('ses_1').parts[0].text);
+  assert.deepEqual(body_.material.conversation.at(-1), { role: 'user', content: 'Write a file' });
+  assert.match(body_.conventions, /file_path is absolute/);
+});
