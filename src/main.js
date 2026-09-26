@@ -9,7 +9,7 @@ import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
-import { PROBE_TIMEOUT, probeBody, judgeProbe, probeFailure, formatUnsupported } from './probe.js';
+import { PROBE_TIMEOUT, probeBody, probeModel, probeFailure, formatUnsupported } from './probe.js';
 import { modelResult, withRequestMeta } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
@@ -135,9 +135,8 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         const timer = setTimeout(() => { timedOut = true; deadline.abort(); }, PROBE_TIMEOUT);
         try {
           if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
-          const token = randomBytes(8).toString('hex');
-          const response = await runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([probeAbort.signal, deadline.signal]), meta);
-          judgeProbe(response, token);
+          // A retry shares the single deadline, so detection time stays bounded.
+          await probeModel({ complete: token => runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([probeAbort.signal, deadline.signal]), meta) });
           await record(model.id, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'probe', undefined, meta);
         } catch (cause) {
           const e = probeFailure(cause, timedOut);

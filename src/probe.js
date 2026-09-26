@@ -1,4 +1,5 @@
 import { BridgeError } from './protocol.js';
+import { randomBytes } from 'node:crypto';
 
 // Detection must approximate real WorkBuddy traffic. The previous probe forced
 // tool_choice: "required" with a single tool, so it only validated transport and format:
@@ -45,6 +46,28 @@ export function judgeProbe(response, token) {
 export function formatUnsupported(error) {
   return ['invalid_model_output', 'invalid_tool_call'].includes(error?.code)
     || /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i.test(error?.message || '');
+}
+
+// A semantic miss is a single stochastic event: retrying it once stops a model that
+// passed before from being withdrawn on one unlucky response. A format failure belongs to
+// the chat-only path, and a timeout reflects load rather than a fluke, so neither is
+// retried here.
+export const RETRYABLE_PROBE = new Set(['probe_mismatch', 'no_action']);
+
+export async function probeModel({ complete, retries = 1 }) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const token = randomBytes(8).toString('hex');
+    try {
+      const response = await complete(token);
+      judgeProbe(response, token);
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !RETRYABLE_PROBE.has(error.code)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 // The probe owns its deadline: AbortSignal.any surfaces the abort as an opaque

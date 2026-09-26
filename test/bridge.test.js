@@ -850,3 +850,29 @@ test('a failed handoff reports why instead of swallowing the reason', async () =
     assert.match(meta.handoffCheck.detail, /no event carried this call ID/, 'The failure to identify the call is reported, not swallowed');
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('a semantic probe miss is retried once, a format failure is not', async () => {
+  const { probeModel, RETRYABLE_PROBE } = await import('../src/probe.js');
+  assert.equal(RETRYABLE_PROBE.has('probe_mismatch'), true);
+  assert.equal(RETRYABLE_PROBE.has('no_action'), true);
+  assert.equal(RETRYABLE_PROBE.has('invalid_model_output'), false, 'Format failures keep the chat-only path');
+  assert.equal(RETRYABLE_PROBE.has('timeout'), false, 'A timeout is load, not a fluke');
+  assert.equal(RETRYABLE_PROBE.has('native_tool_activity'), false);
+
+  const textOnly = () => completion(models[0].id, { role: 'assistant', content: 'no action' });
+  const acted = token => completion(models[0].id, { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function',
+    function: { name: 'Read', arguments: JSON.stringify({ file_path: `/external/probe-${token}.txt` }) } }] });
+
+  let calls = 0;
+  const response = await probeModel({ complete: async token => { calls++; return calls === 1 ? textOnly() : acted(token); } });
+  assert.equal(calls, 2, 'A single miss is retried');
+  assert.equal(response.choices[0].message.tool_calls[0].function.name, 'Read');
+
+  let attempts = 0;
+  await assert.rejects(probeModel({ complete: async () => { attempts++; return textOnly(); } }), e => e.code === 'no_action');
+  assert.equal(attempts, 2, 'Two misses in a row still fail');
+
+  let formatAttempts = 0;
+  await assert.rejects(probeModel({ complete: async () => { formatAttempts++; throw Object.assign(new Error('Invalid model response envelope'), { code: 'invalid_model_output' }); } }), /envelope/);
+  assert.equal(formatAttempts, 1, 'A format failure is not retried here');
+});
