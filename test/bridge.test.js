@@ -113,22 +113,31 @@ test('HTTP authenticates local clients, rejects origins, supports SSE and model 
   } finally { server.closeAllConnections(); server.close(); }
 });
 
-test('native approval requests abort inference without approving any action', async () => {
-  const events = []; let started = false;
+test('a native approval without a call ID is refused by name and never approved', async () => {
+  const events = []; const replies = []; let pending = false, held;
   const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
     events.push(`${req.method} ${req.url}`);
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/session') return res.end('{"id":"ses_blocked"}');
-    if (req.url === '/permission') return res.end(JSON.stringify(started ? [{ id: 'per_blocked', sessionID: 'ses_blocked' }] : []));
-    if (req.url.endsWith('/message')) { started = true; return; }
+    if (req.url === '/permission') return res.end(JSON.stringify(pending ? [{ id: 'per_blocked', sessionID: 'ses_blocked', permission: 'bash' }] : []));
+    if (req.url.endsWith('/reply')) {
+      replies.push(JSON.parse(raw)); pending = false;
+      if (held) { const answered = held; held = null; answered.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); }
+      return res.end('true');
+    }
+    if (req.url.endsWith('/message')) { pending = true; held = res; return; }
     res.end('true');
   });
   const backend = new Backend(await listen(fake), 'test', 1500);
   try {
-    await assert.rejects(backend.complete(prepare(body, models)), e => e.code === 'native_tool_activity');
-    assert.ok(events.includes('POST /session/ses_blocked/abort'));
+    const result = await backend.complete(prepare(body, models));
+    assert.equal(result.choices[0].message.content, 'OK', 'A refusal must not abort the whole request');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].reply, 'reject', 'No native action is ever approved');
+    assert.match(replies[0].message, /"bash"/, 'The refusal names the tool');
     assert.ok(events.includes('DELETE /session/ses_blocked'));
-    assert.ok(!events.some(e => e.includes('/reply')));
+    assert.ok(!events.some(e => /approve|allow/.test(e)));
   } finally { fake.closeAllConnections(); fake.close(); }
 });
 
@@ -139,6 +148,8 @@ test('a native action is rejected before a corrected structured response is acce
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/session') return res.end('{"id":"ses_correct"}');
     if (req.url === '/permission') return res.end(JSON.stringify(waiting ? [{ id: 'per_correct', sessionID: 'ses_correct', tool: { callID: 'native_call' } }] : []));
+    if (req.url === '/session/ses_correct/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_call', tool: 'glob', state: { status: 'running', input: { pattern: '**/*' } } }] }]));
     if (req.url.endsWith('/message')) { waiting = res; return; }
     if (req.url.endsWith('/reply')) {
       reply = JSON.parse(raw);
@@ -682,4 +693,93 @@ test('only format incompatibility degrades a model to chat-only', async () => {
     'Refusing to act is not a format problem: such a model must not be published as chat-only');
   assert.equal(formatUnsupported({ code: 'timeout', message: 'Model probe timed out' }), false);
   assert.equal(formatUnsupported({ code: 'no_action', message: '模型只返回了文本，没有产生任何动作' }), false);
+});
+
+test('a blocked native bash action maps to the external Bash tool', async () => {
+  const { buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Bash', parameters: { type: 'object',
+    properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } }];
+  const handoff = buildHandoff({ native: 'bash', input: { command: 'ls /Users/Zhuanz/WorkBuddy/', description: 'list' }, tools });
+  assert.deepEqual(handoff, { name: 'Bash', arguments: { command: 'ls /Users/Zhuanz/WorkBuddy/', description: 'list' } });
+  assert.equal(buildHandoff({ native: 'bash', input: { description: 'no command' }, tools }), null, 'required arguments must be satisfiable');
+});
+
+test('a blocked native read maps to Read with the external field name', async () => {
+  const { buildHandoff } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  assert.deepEqual(buildHandoff({ native: 'read', input: { filePath: '/tmp/a.md' }, tools }),
+    { name: 'Read', arguments: { file_path: '/tmp/a.md' } });
+  assert.deepEqual(buildHandoff({ native: 'write', input: { filePath: '/tmp/a.md', content: 'x' }, tools }), null,
+    'no Write tool was supplied, so nothing may be invented');
+});
+
+test('an action without an external equivalent is reported by name, not silently dropped', async () => {
+  const { buildHandoff, rejectFeedback } = await import('../src/handoff.js');
+  const tools = [{ type: 'function', function: { name: 'Read', parameters: { type: 'object',
+    properties: { file_path: { type: 'string' } }, required: ['file_path'] } } }];
+  assert.equal(buildHandoff({ native: 'glob', input: { pattern: '**/*.md' }, tools }), null);
+  const feedback = rejectFeedback('glob', 'its arguments cannot be mapped onto an external tool schema supplied in this request');
+  assert.match(feedback, /"glob"/);
+  assert.match(feedback, /cannot be mapped/);
+  assert.match(feedback, /calls array/);
+});
+
+test('a handed-over native action becomes the answer without a second model turn', async () => {
+  const events = []; let waiting = false;
+  const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } };
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_handoff"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(waiting ? [{ id: 'per_bash', sessionID: 'ses_handoff',
+      permission: 'external_directory', metadata: { command: 'ls /tmp' }, tool: { callID: 'native_bash' } }] : []));
+    if (req.url === '/session/ses_handoff/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_bash', tool: 'bash', state: { status: 'running', input: { command: 'ls /tmp', description: 'list the directory' } } }] }]));
+    if (req.url === '/session/ses_handoff/message') { waiting = true; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
+    const call = result.choices[0].message.tool_calls[0];
+    assert.equal(call.function.name, 'Bash');
+    assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp', description: 'list the directory' });
+    assert.ok(events.includes('POST /session/ses_handoff/abort'), 'The generation is stopped once the action is handed over');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
+
+test('an unmappable native action is refused by name and the request still completes', async () => {
+  const events = []; const replies = []; let phase = 'idle'; let held;
+  const readTool = { type: 'function', function: { name: 'Read', description: 'Read a file',
+    parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } } };
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_unmapped"}');
+    if (req.url === '/permission') return res.end(JSON.stringify(phase === 'asking' ? [{ id: 'per_glob', sessionID: 'ses_unmapped',
+      permission: 'external_directory', metadata: {}, tool: { callID: 'native_glob' } }] : []));
+    if (req.url === '/session/ses_unmapped/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_glob', tool: 'glob', state: { status: 'running', input: { pattern: '**/*.md' } } }] }]));
+    if (req.url.endsWith('/reply')) {
+      replies.push(JSON.parse(raw));
+      phase = 'replied';
+      if (held) { const response = held; held = null; response.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); }
+      return res.end('true');
+    }
+    if (req.url === '/session/ses_unmapped/message') { phase = 'asking'; held = res; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [readTool] }, models));
+    assert.equal(result.choices[0].message.content, 'OK', 'A refused native call must not abort the whole request');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].reply, 'reject');
+    assert.match(replies[0].message, /"glob"/, 'The feedback names the tool that could not be mapped');
+    assert.ok(!events.includes('POST /session/ses_unmapped/abort'));
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });

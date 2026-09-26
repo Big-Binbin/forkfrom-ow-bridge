@@ -51,6 +51,7 @@ function renderDetails() {
   if (Number.isInteger(r.nativeAttempts) && r.nativeAttempts > 0) add(`最近一次调用拦截了 ${r.nativeAttempts} 次本地执行尝试，动作必须由 WorkBuddy 执行。`, 'error-text');
   if (r.noAction) add('最近一次调用只有文本回复、没有产生任何动作，WorkBuddy 不会执行任何操作。', 'error-text');
   if (Number.isInteger(r.calls) && r.calls > 0) add(`最近一次调用返回了 ${r.calls} 个动作。`);
+  if (r.handoff) add(`最近一次调用把被拦下的本地动作转交成外部 ${r.handoff} 调用。`);
   add(`图片输入：${model.images ? '支持' : '不支持'}`);
   add(`上下文：${model.context ?? '未声明'} · 输入上限：${model.input ?? '未单独声明'} · 输出上限：${model.output ?? '未声明'}`);
   const variants = Object.keys(model.variants || {});

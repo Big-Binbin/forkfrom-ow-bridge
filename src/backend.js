@@ -1,5 +1,7 @@
 import { BridgeError, decode, completion } from './protocol.js';
+import { buildHandoff, rejectFeedback } from './handoff.js';
 import { request as httpRequest } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Keep official approval gates active. No native operation is ever approved.
@@ -112,6 +114,23 @@ export class Backend {
     meta.activity(progress);
   }
 
+  reject(permission, message, signal) {
+    return this.request(`/permission/${encodeURIComponent(permission.id)}/reply`, 'POST', { reply: 'reject', message }, signal, 5000);
+  }
+  // An approval request carries a call ID, not the arguments: read them back from the part.
+  async blockedAction(sessionID, callID, signal) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const messages = await this.request(`/session/${encodeURIComponent(sessionID)}/message`, 'GET', undefined, signal, 5000).catch(() => null);
+      for (const message of Array.isArray(messages) ? messages : []) {
+        for (const part of message?.parts ?? []) {
+          if (part?.type === 'tool' && part.callID === callID) return { tool: part.tool, input: part.state?.input ?? {} };
+        }
+      }
+      await delay(150, undefined, { signal, ref: false }).catch(() => {});
+    }
+    return null;
+  }
+
   async models() {
     const result = freeModels(await this.request('/provider'));
     if (!result.length) throw new Error('No free text models found; existing list preserved');
@@ -133,15 +152,29 @@ export class Backend {
         if (!Array.isArray(pending)) throw new BridgeError('Permission monitor unavailable', 502, 'permission_monitor_error');
         for (const p of pending.filter(p => p.sessionID === session.id)) {
           if (request.chatOnly) throw new BridgeError('Chat-only model attempted native tool use; execution blocked', 502, 'native_tool_activity');
-          if (!p.tool?.callID || rejected.size >= 2) throw new BridgeError('OpenCode repeatedly attempted native actions; execution was not approved', 502, 'native_tool_activity');
-          rejected.add(p.tool.callID);
+          const callID = p.tool?.callID;
+          if (callID) rejected.add(callID);
           meta.nativeAttempts += 1;
           // Keep the approval request verbatim: OpenCode's field names differ from the SDK
           // types, so cherry-picking fields silently loses the useful ones.
           if (meta.permissions.length < 5) meta.permissions.push(shrinkPermission(p));
-          await this.request(`/permission/${encodeURIComponent(p.id)}/reply`, 'POST', {
-            reply: 'reject', message: 'Native execution is forbidden. Return the requested external action inside the calls array using StructuredOutput. The external client will execute it and supply results. Do not call any other native tools.',
-          }, guardSignal, 5000);
+          if (!callID) {
+            await this.reject(p, rejectFeedback(p.permission || 'native tool', 'the approval request carries no call ID, so it cannot be matched to the external tool list'), guardSignal);
+            continue;
+          }
+          const action = await this.blockedAction(session.id, callID, guardSignal);
+          const handoff = action ? buildHandoff({ native: action.tool, input: action.input, tools: request.tools }) : null;
+          if (handoff) {
+            // Stop this generation: the external client executes the action from here.
+            await this.request(`${route}/abort`, 'POST', undefined, undefined, 5000).catch(() => {});
+            await this.reject(p, 'This native action is executed by the external client instead.', guardSignal).catch(() => {});
+            return { handoff };
+          }
+          // Repeated attempts no longer abort the request; only the call is refused, by name.
+          const reason = action
+            ? 'its arguments cannot be mapped onto an external tool schema supplied in this request'
+            : 'the call could not be read back from the session';
+          await this.reject(p, rejectFeedback(action?.tool || p.permission || 'native tool', reason), guardSignal);
         }
         await delay(250, undefined, { signal: guardSignal });
       }
@@ -169,6 +202,15 @@ export class Backend {
       for (let attempt = 0; attempt < 2; attempt++) {
         meta.steps += 1;
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
+        // A blocked native action was handed over: return it as the model's own answer.
+        if (response?.handoff) {
+          meta.calls = 1;
+          meta.handoff = response.handoff.name;
+          successful = true;
+          return completion(request.model.id, { role: 'assistant', content: null,
+            tool_calls: [{ id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function',
+              function: { name: response.handoff.name, arguments: JSON.stringify(response.handoff.arguments) } }] }, undefined);
+        }
         if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
           const error = response.info.error;
           throw new BridgeError(error.data?.message || error.message || error.name || 'Model request failed', error.data?.statusCode || 502, 'model_error');

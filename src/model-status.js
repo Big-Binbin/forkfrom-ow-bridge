@@ -20,6 +20,7 @@ export function withRequestMeta(result, meta = {}, chatOnly = false) {
   if (Number.isInteger(meta.calls)) result.calls = meta.calls;
   if (Number.isInteger(meta.nativeAttempts)) result.nativeAttempts = meta.nativeAttempts;
   if (Number.isInteger(meta.steps)) result.steps = meta.steps;
+  if (typeof meta.handoff === 'string') result.handoff = meta.handoff;
   if (!chatOnly && Number.isInteger(meta.tools) && meta.tools > 0 && meta.calls === 0) result.noAction = true;
   return result;
 }

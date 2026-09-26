@@ -61,3 +61,19 @@ MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 Work
 现在探针改为：5 个真实命名的外部工具（Read/Write/Bash/Glob/WebSearch，各带必填参数）、不传 `tool_choice`、指令要求读取一个带随机 token 的文件。判定标准是"是否返回携带该 token 的 Read 调用"：只回文本记为 `no_action`（分类 `no_action`，界面显示"无动作"）并撤下；返回与请求不符的调用仍记 `invalid_tool_call`。
 
 超时也单独区分：探针此前依赖 `AbortSignal.any`，30 秒到点抛出的是 `AbortError`（"The operation was aborted"），被归为一般错误，界面因此不显示"检测超时"。现在探针自己持计时器，超时记为 `timeout`。检测上限由 30 秒放宽到 60 秒（`src/probe.js` 的 `PROBE_TIMEOUT`）：30 秒会撤下偏慢但仍可用的模型（Nemotron 3.5 Lightning 连续两次被撤），代价是模型卡住时启动检测最多多花 60 秒。降级为"仅对话"只允许发生在**格式不兼容**时（`invalid_model_output`、`invalid_tool_call`，或上游明确报 `tool_choice` 仅支持 auto）。模型坚持本地执行（`native_tool_activity`）属于另一类失败，不再被降级：否则 WorkBuddy 会拿到一个永远不可能产生动作的"可用 · 仅对话"模型（Ling 3.0 Flash Fin Free 实测即为此例）。检测后的分类与面板标签由测试锁定：`no_action`→无动作、`timeout`→检测超时、`quota`→额度不足、`rate_limit`→请求受限、`access`→访问受限，其余失败回落为不可用。
+
+
+## 拦截即转交（2026-09-26）
+
+Ling 3.0 Flash Fin Free 的一次真实调用在 195 秒后被判失败，错误是 `OpenCode repeatedly attempted native actions; execution was not approved`。原始审批记录显示它两次尝试的都是正确目标：先是 `metadata.command = "ls /Users/Zhuanz/WorkBuddy/2026-09-26-05-21-06/"`，再是 `metadata.filepath = "…/popmart-slides.html"`，第三次触发"两次即判死"。
+
+也就是说转交所需的数据桥早就在收，只是没用：模型想做对的事，桥不给路。现在改为拦截时先转交：
+
+- 按 `p.tool.callID` 调 `GET /session/:id/message` 读回 tool part 的 `tool` 与 `state.input`（最多重试 3 次，避免刚发起时 part 尚未落盘）；
+- `src/handoff.js` 按类别映射，以本次 `request.tools` 的 JSON schema 为权威，只填目标 schema 里真实存在的键，并把该工具的 `required` 全部填上才转交；
+- 映射成功：`POST /session/:id/abort` 中止这一轮生成，该动作直接作为 `calls` 返回给 WorkBuddy，不再消耗第二次上游调用；
+- 映射失败：拒绝并在反馈里点出工具名与原因（无对应外部工具 / 参数无法映射 / 读不回调用），**不再中止整个请求**，"两次即判死"已删除。
+
+回归测试覆盖：`ls` 型 bash 必须转成 `Bash`；`filePath` 型必须转成 `Read` 且字段名正确；无外部对应物（如 `glob`）必须按名拒绝且请求照常完成、不触发 abort；转交成功时必须已 abort 生成本身。
+
+已知未决：删掉次数上限后，模型若反复尝试原生动作，现在没有任何请求级上限，只能靠上游自身的步数限制——是否需要一个"多次拒绝后终止"的软上限，尚未决定。
