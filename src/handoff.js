@@ -16,6 +16,13 @@ const CATEGORIES = [
     fields: { filePath: 'file_path', file_path: 'file_path', path: 'file_path',
       oldString: 'old_string', old_string: 'old_string', newString: 'new_string', new_string: 'new_string',
       replaceAll: 'replace_all', replace_all: 'replace_all', edits: 'edits' } },
+  // A field may have several acceptable target names: external tools disagree on spelling.
+  { native: ['glob'], targets: ['Glob', 'LS'],
+    fields: { pattern: 'pattern', path: ['path', 'directory'], include: 'include' } },
+  { native: ['grep'], targets: ['Grep', 'Search'],
+    fields: { pattern: 'pattern', path: ['path', 'directory'], include: 'include', output_mode: 'output_mode' } },
+  { native: ['skill'], targets: ['Skill'],
+    fields: { name: ['name', 'skill'], skill: ['skill', 'name'], args: ['args', 'arguments'], arguments: ['arguments', 'args'] } },
 ];
 
 export function buildHandoff({ native, input = {}, tools = [] }) {
@@ -28,9 +35,13 @@ export function buildHandoff({ native, input = {}, tools = [] }) {
     if (!properties) continue;
     const args = {};
     for (const [key, value] of Object.entries(input)) {
-      const mapped = category.fields[key];
-      if (!mapped || value === undefined || args[mapped] !== undefined) continue;
-      if (Object.hasOwn(properties, mapped)) args[mapped] = value;
+      const candidates = category.fields[key];
+      if (!candidates || value === undefined) continue;
+      for (const mapped of Array.isArray(candidates) ? candidates : [candidates]) {
+        if (args[mapped] !== undefined || !Object.hasOwn(properties, mapped)) continue;
+        args[mapped] = value;
+        break;
+      }
     }
     const required = Array.isArray(spec.parameters.required) ? spec.parameters.required : [];
     if (!Object.keys(args).length) continue;
@@ -49,6 +60,7 @@ export function handoffInput(action, permission) {
   const fallback = {
     command: metadata.command,
     filePath: metadata.filepath ?? metadata.filePath ?? metadata.path,
+    pattern: metadata.pattern ?? (Array.isArray(metadata.patterns) ? metadata.patterns[0] : undefined),
   };
   for (const [key, value] of Object.entries(fallback)) {
     if (input[key] === undefined && typeof value === 'string' && value.trim()) input[key] = value;

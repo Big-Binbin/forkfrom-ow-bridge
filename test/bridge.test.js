@@ -876,3 +876,33 @@ test('a semantic probe miss is retried once, a format failure is not', async () 
   await assert.rejects(probeModel({ complete: async () => { formatAttempts++; throw Object.assign(new Error('Invalid model response envelope'), { code: 'invalid_model_output' }); } }), /envelope/);
   assert.equal(formatAttempts, 1, 'A format failure is not retried here');
 });
+
+test('glob, grep and skill map onto their external equivalents', async () => {
+  const { buildHandoff, handoffInput } = await import('../src/handoff.js');
+  const spec = (name, properties, required) => ({ type: 'function', function: { name, parameters: { type: 'object', properties, required } } });
+
+  const glob = spec('Glob', { pattern: { type: 'string' }, path: { type: 'string' } }, ['pattern']);
+  assert.deepEqual(buildHandoff({ native: 'glob', input: { pattern: '**/*.html', path: '/tmp' }, tools: [glob] }),
+    { name: 'Glob', arguments: { pattern: '**/*.html', path: '/tmp' } });
+
+  // A directory listing tool has no pattern field: only the keys it declares are filled.
+  const ls = spec('LS', { path: { type: 'string' } }, ['path']);
+  assert.deepEqual(buildHandoff({ native: 'glob', input: { pattern: '**/*.html', path: '/tmp' }, tools: [ls] }),
+    { name: 'LS', arguments: { path: '/tmp' } });
+
+  const grep = spec('Grep', { pattern: { type: 'string' }, include: { type: 'string' } }, ['pattern']);
+  assert.deepEqual(buildHandoff({ native: 'grep', input: { pattern: 'popmart', include: '*.md' }, tools: [grep] }),
+    { name: 'Grep', arguments: { pattern: 'popmart', include: '*.md' } });
+
+  // External skill tools disagree on the argument name; the declared one wins.
+  const skill = spec('Skill', { skill: { type: 'string' }, args: { type: 'string' } }, ['skill']);
+  assert.deepEqual(buildHandoff({ native: 'skill', input: { name: 'deep-research' }, tools: [skill] }),
+    { name: 'Skill', arguments: { skill: 'deep-research' } });
+
+  // The approval metadata carries the pattern when the tool part is still pending.
+  assert.deepEqual(handoffInput({ input: {} }, { metadata: { patterns: ['**/*.html'] } }), { pattern: '**/*.html' });
+  assert.deepEqual(handoffInput({ input: {} }, { metadata: { pattern: '**/*.md' } }), { pattern: '**/*.md' });
+
+  // Nothing is invented when the target cannot carry the call.
+  assert.equal(buildHandoff({ native: 'glob', input: { pattern: '**/*' }, tools: [grep] }), null);
+});

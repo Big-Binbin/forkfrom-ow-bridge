@@ -160,9 +160,11 @@ export class Backend {
     const reason = !callID ? 'the approval request carries no call ID, so it cannot be matched to the external tool list'
       : action ? 'its arguments cannot be mapped onto an external tool schema supplied in this request'
         : 'the call could not be read back from the session';
+    // Without the tool part, name what can be known instead of blaming the permission kind.
+    const label = native || (p.metadata?.filepath ? `a file operation on ${p.metadata.filepath}` : p.permission || 'native tool');
     // A permission may already be gone (session aborted, duplicate reply): never let that
     // failing reply take the whole request down with it.
-    await this.reject(p, rejectFeedback(native || p.permission || 'native tool', reason), signal).catch(() => {});
+    await this.reject(p, rejectFeedback(label, reason), signal).catch(() => {});
     return null;
   }
 

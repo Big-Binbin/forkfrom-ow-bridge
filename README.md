@@ -52,7 +52,7 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 
 请求进行中会订阅 OpenCode 的 `GET /event` 事件流，把当前模型、已等待时长和上游重试次数实时写入 `status.json` 的 `activity`；控制面板服务行与托盘据此显示"等待上游 · 第 N 次重试"，不再出现整轮无输出。请求结束或取消时条目立即移除。事件流按需启动，断开后按 1 秒退避重连，运行时停止时一并关闭。
 
-被拦下的原生动作会**先尝试转交**：按 `callID` 反查该次工具调用，把 bash/read/write/edit 类动作按本次 WorkBuddy 提供的工具 schema 映射成外部调用（`bash`→`Bash`；`read` 的 `filePath`→`file_path`；write/edit 连带 `content`、`old_string`、`new_string`），映射成功就中止这一轮生成并直接作为 `calls` 返回，不再要求模型重述。映射失败才回退到拒绝并指出工具名；反复尝试不再中止整个请求。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
+被拦下的原生动作会**先尝试转交**：按 `callID` 反查该次工具调用，把 bash/read/write/edit/glob/grep/skill 类动作按本次 WorkBuddy 提供的工具 schema 映射成外部调用（`bash`→`Bash`；`read` 的 `filePath`→`file_path`；write/edit 连带 `content`、`old_string`、`new_string`；`glob`→`Glob` 或 `LS`；`grep`→`Grep`；`skill`→`Skill`；参数名候选由目标 schema 决定，未声明的键一律丢弃），映射成功就中止这一轮生成并直接作为 `calls` 返回，不再要求模型重述。映射失败才回退到拒绝并指出工具名；反复尝试不再中止整个请求。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
 ## 验证
 
