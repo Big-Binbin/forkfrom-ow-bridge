@@ -465,10 +465,10 @@ test('format correction is bounded and never retries native activity or truncati
       return [];
     };
     await assert.rejects(backend.complete(prepare(body, models)));
-    // A format failure now spends three rounds: the correction, the translation attempt (no
-    // translator is configured here), then the explicit retry. Native activity and truncation
-    // still fail immediately.
-    assert.equal(calls, ['native', 'truncated'].includes(kind) ? 1 : 3);
+    // Every recoverable failure spends three rounds: the correction, the translation attempt (no
+    // translator is configured here), then the explicit retry. Unexpected native activity still
+    // fails immediately, because no retry can make an unapproved execution acceptable.
+    assert.equal(calls, kind === 'native' ? 1 : 3);
   }
 });
 
@@ -1151,4 +1151,26 @@ test('detection never spends the extra round', async () => {
   };
   await assert.rejects(backend.complete(request, undefined, { probe: true }), error => error.code === 'invalid_model_output');
   assert.equal(calls, 2, 'A probe stops after the single format correction');
+});
+
+test('a reply cut off by the output limit is asked again, compactly', async () => {
+  const request = prepare(body, models);
+  const backend = new Backend('http://unused', 'test');
+  const sent = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: 'ses_cut' };
+    if (route.endsWith('/message')) {
+      sent.push(payload.parts[0].text);
+      if (sent.length < 3) return { info: { finish: 'length', tokens: { output: 20000 } }, parts: [] };
+      return { info: { structured: { content: '', calls: [{ name: 'write_file', arguments: { path: 'x' } }] } }, parts: [] };
+    }
+    return [];
+  };
+  const meta = {};
+  const result = await backend.complete(request, undefined, meta);
+  assert.equal(sent.length, 3, 'Correction, translation attempt, explicit retry');
+  assert.match(sent[1], /cut off by the output limit/);
+  assert.match(sent[2], /截断/);
+  assert.match(sent[2], /写紧凑/, 'The retry asks for a compact envelope, not a detailed one');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
 });

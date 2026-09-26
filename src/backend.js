@@ -267,7 +267,6 @@ export class Backend {
         // 'invalid' is how OpenCode marks a call whose arguments failed to parse: nothing executed,
         // so it belongs to the format path (correction, then translation), not to native activity.
         if (response.parts?.some(p => p.type === 'tool' && (request.chatOnly || !['StructuredOutput', 'invalid'].includes(p.tool)) && !(rejected.has(p.callID) && p.state?.status === 'error'))) throw new BridgeError('Unexpected native tool activity; response rejected', 502, 'native_tool_activity');
-        if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
         // The envelope arrives one of three ways: OpenCode's structured field, the completed
         // StructuredOutput call this adapter asks for, or plain text. Reading only the first
         // and the last rejected a correct answer once, so all three are accepted.
@@ -276,6 +275,8 @@ export class Backend {
         const text = envelope !== undefined ? JSON.stringify(envelope) : (response.parts || []).filter(p => p.type === 'text').map(p => p.text).join('');
         let message;
         try {
+          // A reply cut off by the output limit is a failure the model can fix once it is told.
+          if (response.info?.finish === 'length') throw new BridgeError('Model output was truncated', 502, 'output_truncated');
           if (!text.trim()) {
             // Name the real cause, and take the same path as any other unreadable reply: an empty
             // envelope deserves the one correction and the translator just like a malformed one.
@@ -288,13 +289,15 @@ export class Backend {
           message = request.chatOnly ? { role: 'assistant', content: text } : decode(text, request);
         }
         catch (error) {
-          // One format-only correction, whether the whole envelope or a single tool call entry
-          // was wrong: both are slips the model fixes once it is told the exact shape, and
-          // failing them threw away a long turn's work. Native activity and truncation never
-          // reach this point as format errors and are still not retried.
-          if (request.chatOnly || signal?.aborted || !['invalid_model_output', 'invalid_tool_call'].includes(error.code)) throw error;
+          // One correction, one translation, one explicit retry: bounded, and only ever on a path
+          // that has already failed. A malformed envelope and a reply cut off by the output limit
+          // both land here; unexpected native activity still never does.
+          if (request.chatOnly || signal?.aborted || !['invalid_model_output', 'invalid_tool_call', 'output_truncated'].includes(error.code)) throw error;
+          const cut = error.code === 'output_truncated';
           if (!attempt) {
-            payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
+            payload.parts = [{ type: 'text', text: cut
+              ? 'Your previous response was cut off by the output limit before the envelope was complete. Send it again in a much more compact form: content holds the conclusion, calls hold only the essential arguments, and keep reasoning to a minimum.'
+              : 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
             continue;
           }
           if (attempt === 1) {
@@ -305,7 +308,9 @@ export class Backend {
               if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
               // Nothing was inferable, so the model gets one more round with the failure spelled out
               // instead of the turn simply dying here.
-              payload.parts = [{ type: 'text', text: `上一条回复无法交给客户端执行：${error.message}。请重试一次，这次务必写具体：把要做的动作写成 {"content":"给用户的话","calls":[{"name":"外部工具名","arguments":{具体参数}}]} 的 JSON；参数要完整（完整路径、完整命令、要改的原文与替换文本）。如果本来就没有动作要做，就把给用户的结论写完整、写清楚。不要调用本地工具，也不要声称动作已经完成。` }];
+              payload.parts = [{ type: 'text', text: cut
+                ? `上一条回复因为输出长度限制被截断，没能交出完整信封（${error.message}）。请重试一次并把输出写紧凑：content 只写结论，calls 只放必要参数，不要复述已经做过的步骤或历史。`
+                : `上一条回复无法交给客户端执行：${error.message}。请重试一次，这次务必写具体：把要做的动作写成 {"content":"给用户的话","calls":[{"name":"外部工具名","arguments":{具体参数}}]} 的 JSON；参数要完整（完整路径、完整命令、要改的原文与替换文本）。如果本来就没有动作要做，就把给用户的结论写完整、写清楚。不要调用本地工具，也不要声称动作已经完成。` }];
               continue;
             }
           }
