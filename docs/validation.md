@@ -60,4 +60,4 @@ MiMo-V2.6-Flash 的一次真实调用被记为成功，耗时 814 秒，但 Work
 
 现在探针改为：5 个真实命名的外部工具（Read/Write/Bash/Glob/WebSearch，各带必填参数）、不传 `tool_choice`、指令要求读取一个带随机 token 的文件。判定标准是"是否返回携带该 token 的 Read 调用"：只回文本记为 `no_action`（分类 `no_action`，界面显示"无动作"）并撤下；返回与请求不符的调用仍记 `invalid_tool_call`。
 
-超时也单独区分：探针此前依赖 `AbortSignal.any`，30 秒到点抛出的是 `AbortError`（"The operation was aborted"），被归为一般错误，界面因此不显示"检测超时"。现在探针自己持计时器，超时记为 `timeout`。**30 秒上限本身未改动**——它同样会导致偏慢的模型（如 Nemotron 3.5 Lightning 连续两次）被撤下，是否放宽是独立决策。
+超时也单独区分：探针此前依赖 `AbortSignal.any`，30 秒到点抛出的是 `AbortError`（"The operation was aborted"），被归为一般错误，界面因此不显示"检测超时"。现在探针自己持计时器，超时记为 `timeout`。检测上限由 30 秒放宽到 60 秒（`src/probe.js` 的 `PROBE_TIMEOUT`）：30 秒会撤下偏慢但仍可用的模型（Nemotron 3.5 Lightning 连续两次被撤），代价是模型卡住时启动检测最多多花 60 秒。检测后的分类与面板标签由测试锁定：`no_action`→无动作、`timeout`→检测超时、`quota`→额度不足、`rate_limit`→请求受限、`access`→访问受限，其余失败回落为不可用。

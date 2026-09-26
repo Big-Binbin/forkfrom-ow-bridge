@@ -4,7 +4,7 @@ import { BridgeError } from './protocol.js';
 // tool_choice: "required" with a single tool, so it only validated transport and format:
 // a model that answers with text and proposes no action still passed, then wasted real
 // turns (98 s and 58 s observed) while WorkBuddy saw nothing happen.
-export const PROBE_TIMEOUT = 30000;
+export const PROBE_TIMEOUT = 60000;
 
 export const PROBE_TOOLS = [
   { type: 'function', function: { name: 'Read', description: 'Read a file from the external working directory.', parameters: { type: 'object', properties: { file_path: { type: 'string', description: 'Absolute path of the file to read' } }, required: ['file_path'] } } },

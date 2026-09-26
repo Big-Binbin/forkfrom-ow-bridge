@@ -652,3 +652,23 @@ test('detection requires an action, not just a valid envelope', async () => {
   assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
   assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
 });
+
+test('every detection category has a label the panel can show', async () => {
+  const fs = await import('node:fs/promises');
+  const { modelResult } = await import('../src/model-status.js');
+  const renderer = await fs.readFile(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
+  const tray = await fs.readFile(new URL('../desktop/main.cjs', import.meta.url), 'utf8');
+  const expected = { no_action: '无动作', timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' };
+
+  assert.equal(modelResult(false, '模型只返回了文本，没有产生任何动作', 502, 'no_action').category, 'no_action');
+  assert.equal(modelResult(false, 'Model probe timed out', 504, 'timeout').category, 'timeout');
+  assert.equal(modelResult(false, 'insufficient_quota', 429).category, 'quota');
+  assert.equal(modelResult(false, 'Too many requests', 429).category, 'rate_limit');
+  assert.equal(modelResult(false, 'Free tier only within OpenCode', 403).category, 'access');
+  assert.equal(modelResult(true).category, 'available');
+
+  for (const [category, label] of Object.entries(expected))
+    assert.match(renderer, new RegExp(`${category}: '${label}'`), `The panel must label ${category} as ${label}`);
+  assert.match(tray, /noAction \? '可用 · 未产生动作'/, 'The tray must show the no-action state');
+  assert.match(renderer, /chatOnly \? '可用 · 仅对话'/, 'The panel must show the chat-only state');
+});
