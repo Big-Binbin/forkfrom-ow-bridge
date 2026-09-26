@@ -30,8 +30,11 @@ export function judgeProbe(response, token) {
   if (!calls?.length) throw new BridgeError('模型只返回了文本，没有产生任何动作', 502, 'no_action');
   let args = {};
   try { args = JSON.parse(calls[0].function?.arguments || '{}'); } catch {}
+  // A mismatch is not a format incompatibility: the envelope was valid, the action was
+  // wrong. It must not be reported as an inability to carry tool calls, and the names that
+  // did come back are part of the evidence.
   if (calls.length !== 1 || calls[0].function?.name !== 'Read' || !String(args.file_path || '').includes(token))
-    throw new BridgeError('模型返回的动作与请求不符', 502, 'invalid_tool_call');
+    throw new BridgeError(`模型返回的动作与探测请求不符（收到 ${calls.map(call => call?.function?.name || '未命名').join('、') || '无调用'}）`, 502, 'probe_mismatch');
   return calls[0];
 }
 

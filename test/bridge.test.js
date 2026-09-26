@@ -653,7 +653,7 @@ test('detection requires an action, not just a valid envelope', async () => {
 
   const unrelated = completion(models[0].id, { role: 'assistant', content: null,
     tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'Bash', arguments: '{"command":"ls"}' } }] });
-  assert.throws(() => judgeProbe(unrelated, token), e => e.code === 'invalid_tool_call');
+  assert.throws(() => judgeProbe(unrelated, token), e => e.code === 'probe_mismatch' && /Bash/.test(e.message));
 
   const timedOut = probeFailure(new Error('The operation was aborted'), true);
   assert.equal(timedOut.name, 'TimeoutError', 'A real deadline must not look like an opaque abort');
@@ -689,6 +689,8 @@ test('only format incompatibility degrades a model to chat-only', async () => {
   assert.equal(formatUnsupported({ code: 'invalid_model_output' }), true);
   assert.equal(formatUnsupported({ code: 'invalid_tool_call' }), true);
   assert.equal(formatUnsupported({ message: 'only `"auto"` is supported for `tool_choice`' }), true);
+  assert.equal(formatUnsupported({ code: 'probe_mismatch', message: '模型返回的动作与探测请求不符（收到 Bash）' }), false,
+    'A wrong action is not a format problem either');
   assert.equal(formatUnsupported({ code: 'native_tool_activity', message: 'OpenCode repeatedly attempted native actions; execution was not approved' }), false,
     'Refusing to act is not a format problem: such a model must not be published as chat-only');
   assert.equal(formatUnsupported({ code: 'timeout', message: 'Model probe timed out' }), false);
