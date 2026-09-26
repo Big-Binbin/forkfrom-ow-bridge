@@ -11,4 +11,16 @@ export function modelResult(ok, message = '', status, code) {
   return { ok, category, time: new Date().toISOString(), ...(message ? { error: message } : {}), ...(status ? { status } : {}), ...(code ? { code } : {}) };
 }
 
+// A syntactically valid envelope is not the same as an executed action. WorkBuddy decides
+// whether an action is needed, so a text-only reply stays usable, but it must never be
+// displayed as a plain success and blocked native attempts must stay visible.
+export function withRequestMeta(result, meta = {}, chatOnly = false) {
+  if (!meta || typeof meta !== 'object') return result;
+  if (Number.isInteger(meta.calls)) result.calls = meta.calls;
+  if (Number.isInteger(meta.nativeAttempts)) result.nativeAttempts = meta.nativeAttempts;
+  if (Number.isInteger(meta.steps)) result.steps = meta.steps;
+  if (!chatOnly && Number.isInteger(meta.tools) && meta.tools > 0 && meta.calls === 0) result.noAction = true;
+  return result;
+}
+
 export function clientModelID(model) { return `OC · ${model.name}`; }

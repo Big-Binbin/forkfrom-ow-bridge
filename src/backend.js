@@ -50,7 +50,8 @@ export class Backend {
     if (!result.length) throw new Error('No free text models found; existing list preserved');
     return result;
   }
-  async complete(request, signal) {
+  async complete(request, signal, meta = {}) {
+    meta.steps = 0; meta.nativeAttempts = 0; meta.permissions = [];
     // Native tools require approval; the bridge aborts any attempted native action.
     const session = await this.request('/session', 'POST', { title: 'Buddy Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
@@ -65,6 +66,9 @@ export class Backend {
           if (request.chatOnly) throw new BridgeError('Chat-only model attempted native tool use; execution blocked', 502, 'native_tool_activity');
           if (!p.tool?.callID || rejected.size >= 2) throw new BridgeError('OpenCode repeatedly attempted native actions; execution was not approved', 502, 'native_tool_activity');
           rejected.add(p.tool.callID);
+          meta.nativeAttempts += 1;
+          // Keep the raw approval request so a blocked native action stays diagnosable.
+          if (meta.permissions.length < 5) meta.permissions.push({ id: p.id, type: p.type, title: p.title, pattern: p.pattern, callID: p.tool.callID, metadata: p.metadata });
           await this.request(`/permission/${encodeURIComponent(p.id)}/reply`, 'POST', {
             reply: 'reject', message: 'Native execution is forbidden. Return the requested external action inside the calls array using StructuredOutput. The external client will execute it and supply results. Do not call any other native tools.',
           }, guardSignal, 5000);
@@ -93,6 +97,7 @@ export class Backend {
         parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
       };
       for (let attempt = 0; attempt < 2; attempt++) {
+        meta.steps += 1;
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
         if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
           const error = response.info.error;
@@ -109,6 +114,7 @@ export class Backend {
           payload.parts = [{ type: 'text', text: 'Your previous response failed the adapter JSON format check. No external tool has been executed from that response. Return the intended answer or external tool proposal using StructuredOutput with exactly {"content":"a string, empty if only calling tools","calls":[{"name":"an allowed external tool name","arguments":{}}]}. Both fields are required; use [] when no tools are needed. Do not invoke native tools, repeat external searches, or claim actions have completed. Preserve the external conversation and its existing tool results.' }];
           continue;
         }
+        meta.calls = message.tool_calls?.length ?? 0;
         successful = true;
         return completion(request.model.id, message, response.info?.tokens);
       }

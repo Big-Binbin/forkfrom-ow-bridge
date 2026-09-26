@@ -518,3 +518,58 @@ test('missing Write arguments reach WorkBuddy and its validation error returns t
     assert.equal(JSON.parse(corrected.tool_calls[0].function.arguments).file_path, 'out.txt');
   }
 });
+
+test('a text-only reply is never recorded as a plain success', async () => {
+  const { withRequestMeta } = await import('../src/model-status.js');
+  const noAction = withRequestMeta({ model: 'x', ok: true, category: 'available' }, { tools: 3, calls: 0, nativeAttempts: 1, steps: 4 }, false);
+  assert.equal(noAction.noAction, true);
+  assert.equal(noAction.calls, 0);
+  assert.equal(noAction.nativeAttempts, 1);
+  assert.equal(noAction.steps, 4);
+  assert.equal(withRequestMeta({ ok: true }, { tools: 0, calls: 0 }, true).noAction, undefined, 'Chat-only replies never needed an external action');
+  assert.equal(withRequestMeta({ ok: true }, { tools: 3, calls: 2 }, false).noAction, undefined, 'Returned calls are a real action');
+});
+
+test('request meta reaches the recorder with blocked native attempts', async () => {
+  const recorded = [];
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async (request, signal, meta) => {
+      meta.calls = 0; meta.nativeAttempts = 1; meta.steps = 3;
+      meta.permissions = [{ id: 'per_1', type: 'external_directory', title: 'read', callID: 'call_native' }];
+      return completion(request.model.id, { role: 'assistant', content: 'no action' });
+    } },
+    onResult: async (...args) => { recorded.push(args); }, status: () => ({}) });
+  const base = await listen(server);
+  try {
+    const response = await fetch(base + '/v1/chat/completions', { method: 'POST',
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0][1], true);
+    const meta = recorded[0][8];
+    assert.equal(meta.tools, 1, 'The recorder learns how many external tools were offered');
+    assert.deepEqual({ calls: meta.calls, nativeAttempts: meta.nativeAttempts, steps: meta.steps }, { calls: 0, nativeAttempts: 1, steps: 3 });
+    assert.equal(meta.permissions[0].type, 'external_directory');
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('a cancelled client request is never recorded as a completed success', async () => {
+  const recorded = [];
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async request => {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return completion(request.model.id, { role: 'assistant', content: 'late' });
+    } },
+    onResult: async (...args) => { recorded.push(args); }, status: () => ({}) });
+  const base = await listen(server);
+  const controller = new AbortController();
+  try {
+    const pending = fetch(base + '/v1/chat/completions', { method: 'POST', signal: controller.signal,
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    controller.abort();
+    await pending;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.deepEqual(recorded, [], 'A cancelled request must not be recorded as a success');
+  } finally { server.closeAllConnections(); server.close(); }
+});

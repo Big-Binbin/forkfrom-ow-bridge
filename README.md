@@ -47,7 +47,8 @@ OpenCode 固定为 1.18.32，使用隔离配置，不批准原生执行工具。
 
 结构化返回格式不合格时，在同一隔离会话内最多要求模型纠正一次，纠正前不向 WorkBuddy 发出工具调用；工具名/参数错误、原生工具活动和截断仍直接拒绝，代理不为模型生成设置总时长上限；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。
 
-支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
+支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。
+请求结果区分"产出合法回复"和"产生动作"：只回复文本而没有动作时记录 `noAction`，界面显示"可用 · 未产生动作"，不再当作普通成功。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。暂不支持 Responses API、Anthropic Messages API；`temperature`、`max_tokens` 等参数不透传。模型免费额度和可用性由上游控制。
 
 ## 验证
 

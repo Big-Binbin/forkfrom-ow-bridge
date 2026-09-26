@@ -9,7 +9,7 @@ import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
-import { modelResult } from './model-status.js';
+import { modelResult, withRequestMeta } from './model-status.js';
 import { atomicWrite, syncModels } from './sync.js';
 
 const dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
@@ -71,15 +71,17 @@ function syncPublished(published = publishedModels()) {
   });
   return syncWrites;
 }
-async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true) {
+async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true, meta = {}) {
   if (stopping) return;
-  const result = { model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly };
+  const result = withRequestMeta({ model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly }, meta, chatOnly);
+  // Keep the raw approval requests so a blocked native action stays diagnosable after the fact.
+  const captured = Array.isArray(meta.permissions) && meta.permissions.length ? { lastPermission: { time: result.time, entries: meta.permissions } } : {};
   if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated'].includes(code)) {
-    update({ lastRequest: result });
+    update({ lastRequest: result, ...captured });
     return;
   }
   if (ok) validated.add(model); else validated.delete(model);
-  update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}) });
+  update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}), ...captured });
   update({ availableModels: usableModels().map(m => m.id) });
 }
 let probing = false, probeTask;
