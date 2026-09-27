@@ -2,6 +2,17 @@
 
 跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.0 使用 Electron 共用界面和现有 Node.js 代理核心。
 
+## 下载
+
+[下载最新版本](https://github.com/louchi1984-coder/buddy-bridge/releases/latest)
+
+| 系统 | 安装包 |
+|---|---|
+| macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/buddy-bridge/releases/latest/download/Buddy-Bridge-0.2.0-mac-arm64.zip) |
+| Windows x64 | [Windows 安装程序](https://github.com/louchi1984-coder/buddy-bridge/releases/latest/download/Buddy-Bridge-0.2.0-win-x64.exe) |
+
+请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。安装包尚未签名／公证，系统可能提示未知开发者；Windows 安装与联调尚待实机验收。免费模型及额度由上游决定。
+
 ## 使用
 
 - macOS：解压 `Buddy-Bridge-0.2.0-mac-arm64.zip`，双击 Buddy Bridge.app。
@@ -43,9 +54,9 @@ Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为�
 
 输入上限优先读取 `limit.input`，缺少时 WorkBuddy 配置回退 `limit.context`；详情仍分别展示上下文与独立输入上限。输出上限读取 `limit.output`。
 
-代理兼容工具调用中的空/省略 content、纯文本回答省略 calls、OpenAI 风格 tool_calls 和 JSON 字符串参数；未知工具与缺失必要参数仍拒绝。工具执行错误原样保留在外部会话中，由 WorkBuddy 决策；一次请求的格式/工具转换失败不会取消已检测通过的模型资格，额度、访问等可用性错误和重新检测结果仍生效。
+代理兼容工具调用中的空/省略 content、纯文本回答省略 calls、OpenAI 风格 tool_calls 和 JSON 字符串参数；未知工具仍拒绝，已知工具缺少必填参数交给 WorkBuddy 校验。工具执行错误原样保留在外部会话中，由 WorkBuddy 决策；一次请求的格式/工具转换失败不会取消已检测通过的模型资格，额度、访问等可用性错误和重新检测结果仍生效。
 
-结构化返回格式不合格时，在同一隔离会话内最多要求模型纠正一次，纠正前不向 WorkBuddy 发出工具调用；工具名/参数错误、原生工具活动和截断仍直接拒绝，代理不为模型生成设置总时长上限；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。
+格式不合格、坏调用项或输出截断会进入纠正与辅助转换流程。主模型每个请求最多三轮，检测不使用辅助转换；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。当前另有连续 5 分钟未观测到内容事件时的静默中止机制。
 
 支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。
 请求结果记录 `calls`、`nativeAttempts`、`steps`、`handoff`、`repaired` 作为"最近一次调用"的观测，但不参与能力判定（能力标签只由检测决定）。格式兜底只在失败时触发一次：把原模型响应、完整外部文本对话、真实工具描述与参数定义交给另一路模型转换。指导要求保留原动作、文件正文和命令，按客户端定义转换字段名；材料不足时返回 `{"unrepairable":true,"reason":"具体缺失项"}`。信封转换失败后，把具体诊断交回原模型作最后一次纠正；动作转换失败也在现有轮次内请求原模型补齐后重发。已有正常工具调用的参数错误仍交给 WorkBuddy 的工具反馈循环。检测过程从不兜底。转换材料不再截断字符串或嵌套对象，因此长对话会使用更多上下文，仍受辅助模型的上下文上限约束。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。
