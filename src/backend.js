@@ -254,7 +254,8 @@ export class Backend {
     const route = `/session/${encodeURIComponent(session.id)}`;
     meta.sessionID = session.id;
     this.usageBySession.set(session.id, undefined);
-    if (typeof meta.activity === 'function') { this.active.set(session.id, meta); this.watchEvents(); }
+    if (typeof meta.activity === 'function') this.active.set(session.id, meta);
+    this.watchEvents();
     this.progress(meta, 'waiting');
     const guard = new AbortController();
     const rejected = new Set();
@@ -401,6 +402,7 @@ export class Backend {
       guard.abort();
       await watch.catch(() => {});
       this.usageBySession.delete(session.id);
+      if (!this.usageBySession.size) this.stopEvents();
       for (const [id, permission] of this.pendingApprovals)
         if (permission.sessionID === session.id) this.pendingApprovals.delete(id);
       if (typeof meta.activity === 'function') {

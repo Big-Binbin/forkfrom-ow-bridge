@@ -1399,3 +1399,20 @@ test('JSON-encoded calls arrays are decoded without weakening tool validation', 
     assert.throws(() => decode(JSON.stringify({ content, calls }), request), /envelope/);
   }
 });
+
+test('probes subscribe to tool events even without a UI activity callback', async () => {
+  const backend = new Backend('http://unused', 'test');
+  let watching = false, stopped = false;
+  backend.watchEvents = () => { watching = true; };
+  backend.stopEvents = () => { stopped = true; };
+  backend.request = async route => {
+    if (route === '/session') return { id: 'ses_probe_events' };
+    if (route.endsWith('/message')) {
+      assert.equal(watching, true, 'Tool events must be observed before model inference');
+      return { info: {}, parts: [{ type: 'text', text: '{"content":"OK","calls":[]}' }] };
+    }
+    return [];
+  };
+  await backend.complete(prepare(body, models), undefined, { probe: true });
+  assert.equal(stopped, true, 'Release the subscription when the last session ends');
+});
