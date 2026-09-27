@@ -89,6 +89,14 @@ export function decode(text, request) {
       value.calls = value.tool_calls.map(call => call?.type === 'function'
         ? { name: call.function?.name, arguments: call.function?.arguments } : null);
     }
+    // Some models JSON-encode the array a second time. Only unwrap a real array;
+    // malformed strings and non-array values still go through normal repair.
+    if (typeof value.calls === 'string') {
+      try {
+        const calls = JSON.parse(value.calls);
+        if (Array.isArray(calls)) value.calls = calls;
+      } catch {}
+    }
     // Each field may be null when the other one carries the answer: content is null for a
     // tool-only reply and calls is absent for a text-only one. Both spellings mean the
     // documented value, and rejecting them reported a correct answer as a format error.

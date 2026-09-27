@@ -246,3 +246,9 @@ WorkBuddy 历史记录显示 HTTP/流级格式错误会结束当前请求，需�
 真实 Ling 对话上游报告输入 264580 超过 262144，WorkBuddy 配置上限为 262144，近期工具调用用量为 0。修正工具转交时未传 tokens 的路径：中止本轮后、删除会话前读取最新 assistant 消息统计，查询失败使用本会话 message.updated 记录。辅助转换成功使用原响应统计。无统计或初始化全零统计不再伪造 OpenAI usage=0，JSON/SSE 省略用量；不估算，不截断历史，不调整容量声明。
 
 按 OpenCode 的拆分用量定义，prompt_tokens=input+cache.read+cache.write，completion_tokens=output+reasoning，并提供缓存/推理明细。参考：https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.ts 。82 项测试通过，包括用量读取、查询失败后的事件兜底及会话清理、SSE 未知用量省略、缓存和推理计数。不保证上游被中止时已产生用量，不保证 WorkBuddy 的自动压缩行为；已经超限的对话仍需客户端压缩。
+
+## 2026-09-27 MiMo 字符串 calls 与辅助模型接线
+
+20:35:48 的状态记录显示 content=string、calls=string，steps=3，辅助转换记录为 no translator available。原始 calls 未保留，无法确认此次字符串是否为合法数组 JSON。新增仅将合法 JSON 数组字符串解包的兼容；空字符串、非 JSON、对象或再次编码的字符串仍进入现有修复流程，工具名与 tool_choice 校验保留。
+
+发现 attachTranslator 的参数是 startBackend 返回的 runtime 包装对象，选择器却挂在外层而非 runtime.backend。生命周期测试修复前返回 missing，修复后可选中另一可用模型，并覆盖运行时重建。83 项测试通过。本机原应用已直接更新；未重放用户原始失败响应，不宣称所有字符串 calls 均可修复。

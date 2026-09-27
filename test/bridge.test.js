@@ -1378,3 +1378,19 @@ test('handoff usage falls back to its session event and is cleared after complet
   } } });
   assert.equal(backend.usageBySession.size, 0, 'Late events do not resurrect completed session usage');
 });
+
+test('JSON-encoded calls arrays are decoded without weakening tool validation', () => {
+  const request = prepare(body, models);
+  const content = '正文保持不变';
+  const args = { path: 'a', content: 'line 1\n"quoted"\\value' };
+  const encoded = calls => JSON.stringify({ content, calls: JSON.stringify(calls) });
+  const result = decode(encoded([{ name: 'write_file', arguments: JSON.stringify(args) }]), request);
+  assert.equal(result.content, content);
+  assert.deepEqual(JSON.parse(result.tool_calls[0].function.arguments), args);
+  assert.equal(decode(encoded([]), request).content, content);
+  assert.throws(() => decode(encoded([{ name: 'unknown', arguments: {} }]), request), /unlisted/);
+  assert.throws(() => decode(encoded([{ name: 'write_file', arguments: args }]), prepare({ ...body, tool_choice: 'none' }, models)), /none/);
+  for (const calls of ['', 'not json', '{}', 'null', '"[]"']) {
+    assert.throws(() => decode(JSON.stringify({ content, calls }), request), /envelope/);
+  }
+});

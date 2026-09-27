@@ -53,12 +53,12 @@ const publishedModels = usableModels;
 // Translation runs a second model whose only job is the shape. Detection never translates: a probe
 // must measure the model itself, not what the translator can rescue.
 const TRANSLATOR_ORDER = ['opencode/big-pickle', 'opencode/nemotron-3.5-lightning-free', 'opencode/space-bunny-free', 'opencode/mimo-v2.6-flash-free'];
-const attachTranslator = backend => {
-  backend.translator = failed => {
+const attachTranslator = runtime => {
+  runtime.backend.translator = failed => {
     const usable = usableModels().map(model => model.id).filter(id => id !== failed);
     return TRANSLATOR_ORDER.find(id => usable.includes(id)) ?? usable[0] ?? null;
   };
-  return backend;
+  return runtime;
 };
 let syncWrites = Promise.resolve();
 let modelsFile = process.platform === 'win32'

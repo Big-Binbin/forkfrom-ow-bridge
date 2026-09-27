@@ -8,8 +8,9 @@ export async function startBackend(_, dataDir) {
   return { version: 'test', child, stop: async () => child.emit('exit'), backend: {
     request: async () => [{ name: 'buddy-bridge' }],
     models: async () => (await read()).models,
-    complete: async request => {
+    async complete(request) {
       await new Promise(resolve => setTimeout(resolve, 250));
+      if ((await read()).checkTranslator) return { model: request.model.id, choices: [{ message: { role: 'assistant', content: typeof this.translator === 'function' ? (this.translator(request.model.id) ?? 'none') : 'missing' } }] };
       if ((await read()).chatOnly?.includes(request.model.id) && !request.chatOnly) throw Object.assign(new Error('only auto is supported for tool_choice'), { code: 'model_error' });
       if ((await read()).failed.includes(request.model.id)) throw new Error('insufficient_quota');
       if (!request.tools.length && (await read()).formatError) throw Object.assign(new Error('Invalid model response envelope'), { code: 'invalid_model_output' });

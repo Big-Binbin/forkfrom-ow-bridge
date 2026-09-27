@@ -49,6 +49,13 @@ test('startup imports once; repeated checks and reads require import; exit remov
       const response = await fetch(`http://127.0.0.1:${port}/admin/${route}`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       assert.ok(response.ok, await response.text());
     }
+    async function checkTranslator(expected) {
+      catalog.checkTranslator = true; await writeCatalog();
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'OC · A', messages: [{ role: 'user', content: 'Hello' }] }) });
+      assert.equal((await response.json()).choices[0].message.content, expected);
+      catalog.checkTranslator = false; await writeCatalog();
+    }
+    await checkTranslator('opencode/b');
     catalog.formatError = true; await writeCatalog();
     const failedResponse = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'OC · A', messages: [{ role: 'user', content: 'Hello' }] }) });
     assert.equal(failedResponse.status, 502);
@@ -68,6 +75,7 @@ test('startup imports once; repeated checks and reads require import; exit remov
     await post('system-proxy', { enabled: false });
     await waitFor(s => s.probe.running);
     await waitFor(s => s.phase === 'ready' && !s.probe.running);
+    await checkTranslator('none');
     assert.equal(JSON.parse(await fs.readFile(path.join(root, 'settings.json'), 'utf8')).useSystemProxy, false);
     assert.equal(await fs.readFile(config, 'utf8'), initial, 'Network mode changes do not import models');
     assert.equal(await backups(), 2, 'Repeated checks and reads produce no config writes');
