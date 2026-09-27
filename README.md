@@ -19,7 +19,7 @@
 | macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-mac-arm64.zip) |
 | Windows x64（未正式测试） | [Windows 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-win-x64.exe) |
 | Windows ARM64（未正式测试） | [Windows ARM64 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-win-arm64.exe) |
-| Linux x64（实验性，未正式测试） | [Linux AppImage](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-linux-x64.AppImage) |
+| Linux x64（实验性，未正式测试） | [Linux AppImage](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-linux-x86_64.AppImage) |
 
 请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。安装包尚未签名／公证，系统可能提示未知开发者；Windows 安装与联调尚待实机验收。免费模型及额度由上游决定。
 
