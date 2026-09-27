@@ -1317,3 +1317,64 @@ test('permission events preserve handoff when the permission listing cannot seri
     assert.ok(events.includes('POST /session/ses_handoff/abort'), 'The generation is stopped once the action is handed over');
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
 });
+
+test('usage includes cached input and reasoning output without double counting total', () => {
+  const result = completion(body.model, { role: 'assistant', content: 'OK' },
+    { input: 100, output: 20, reasoning: 30, cache: { read: 900, write: 50 }, total: 1100 });
+  assert.equal(result.usage.prompt_tokens, 1050);
+  assert.equal(result.usage.completion_tokens, 50);
+  assert.equal(result.usage.total_tokens, 1100);
+  assert.equal(result.usage.prompt_tokens_details.cached_tokens, 900);
+  assert.equal(result.usage.completion_tokens_details.reasoning_tokens, 30);
+});
+test('missing usage is not reported as zero in JSON or SSE', () => {
+  const result = completion(body.model, { role: 'assistant', content: 'OK' });
+  assert.equal(result.usage, undefined);
+  let text = '';
+  sendSSE({ write: s => { text += s; }, end: s => { text += s; } }, result, true);
+  assert.ok(!text.includes('"usage"'));
+  assert.ok(text.endsWith('data: [DONE]\n\n'));
+});
+test('native handoff returns recorded session usage instead of zero', async () => {
+  const backend = new Backend('http://unused', 'test');
+  const events = [];
+  backend.pendingPermissions = async () => [{ id: 'per_usage', sessionID: 'ses_usage' }];
+  backend.handlePermission = async () => ({ handoff: { name: 'Read', arguments: { file_path: '/tmp/file' } } });
+  backend.request = async (route, method) => {
+    events.push([route, method]);
+    if (route === '/session') return { id: 'ses_usage' };
+    if (route.endsWith('/message?limit=1')) return [{ info: { role: 'assistant', tokens: {
+      input: 100, output: 25, reasoning: 5, cache: { read: 2000, write: 100 },
+    } } }];
+    if (route.endsWith('/message')) return new Promise(() => {});
+    return true;
+  };
+  const result = await backend.complete(prepare(body, models));
+  assert.equal(result.usage.prompt_tokens, 2200);
+  assert.equal(result.usage.completion_tokens, 30);
+  assert.ok(events.findIndex(([r]) => r.endsWith('/abort')) < events.findIndex(([r]) => r.endsWith('/message?limit=1')));
+});
+
+test('handoff usage falls back to its session event and is cleared after completion', async () => {
+  const backend = new Backend('http://unused', 'test');
+  backend.pendingPermissions = async () => [{ id: 'per_usage', sessionID: 'ses_usage' }];
+  backend.handlePermission = async () => ({ handoff: { name: 'Read', arguments: { file_path: '/tmp/file' } } });
+  backend.request = async route => {
+    if (route === '/session') return { id: 'ses_usage' };
+    if (route.endsWith('/abort')) {
+      backend.handleEvent({ type: 'message.updated', properties: { info: {
+        role: 'assistant', sessionID: 'ses_usage', tokens: { input: 1234, output: 5 },
+      } } });
+    }
+    if (route.endsWith('/message?limit=1')) throw new Error('message lookup failed');
+    if (route.endsWith('/message')) return new Promise(() => {});
+    return true;
+  };
+  const result = await backend.complete(prepare(body, models));
+  assert.equal(result.usage.prompt_tokens, 1234);
+  assert.equal(backend.usageBySession.size, 0);
+  backend.handleEvent({ type: 'message.updated', properties: { info: {
+    role: 'assistant', sessionID: 'ses_usage', tokens: { input: 9999 },
+  } } });
+  assert.equal(backend.usageBySession.size, 0, 'Late events do not resurrect completed session usage');
+});

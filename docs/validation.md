@@ -240,3 +240,9 @@ WorkBuddy 历史记录显示 HTTP/流级格式错误会结束当前请求，需�
 本地 HTTP 测试复现单次 ECONNRESET 导致整个推理被 Permission monitor unavailable 中止。修改后查询失败保留错误类型并继续现有轮询，不批准原生动作；回归覆盖断连及异常响应后正常完成、恢复后转交待审批动作、持续查询失败时客户端取消和推理连接错误仍传播。77 项测试通过。未重放用户的真实任务。
 
 后续真实卡住请求确认 `/permission` 持续 HTTP 400：`Expected JSON value, got undefined at [0]["metadata"]["path"]`，并非一次短暂断连。运行中 OpenCode 的 `/doc` 声明 `permission.asked` / `permission.replied`，旧代理只识别 `permission.updated`。新增审批事件缓存，在列表查询失败时按 session 使用缓存处理转交/拒绝，成功回复和结束会话后清理。日志补充上游错误详情。78 项测试通过，包含持续 400 时从审批事件转交工具的场景；真实用户任务仍需重新继续验证。
+
+## 2026-09-27 用量回传
+
+真实 Ling 对话上游报告输入 264580 超过 262144，WorkBuddy 配置上限为 262144，近期工具调用用量为 0。修正工具转交时未传 tokens 的路径：中止本轮后、删除会话前读取最新 assistant 消息统计，查询失败使用本会话 message.updated 记录。辅助转换成功使用原响应统计。无统计或初始化全零统计不再伪造 OpenAI usage=0，JSON/SSE 省略用量；不估算，不截断历史，不调整容量声明。
+
+按 OpenCode 的拆分用量定义，prompt_tokens=input+cache.read+cache.write，completion_tokens=output+reasoning，并提供缓存/推理明细。参考：https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.ts 。82 项测试通过，包括用量读取、查询失败后的事件兜底及会话清理、SSE 未知用量省略、缓存和推理计数。不保证上游被中止时已产生用量，不保证 WorkBuddy 的自动压缩行为；已经超限的对话仍需客户端压缩。

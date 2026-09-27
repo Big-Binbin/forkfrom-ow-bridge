@@ -126,11 +126,17 @@ export function decode(text, request) {
   };
 }
 
-export function completion(model, message, tokens = {}) {
-  const input = tokens.input ?? 0, output = tokens.output ?? 0;
+export function completion(model, message, tokens) {
+  // OpenCode separates cache and reasoning for billing; OpenAI totals include them.
+  const input = (tokens?.input ?? 0) + (tokens?.cache?.read ?? 0) + (tokens?.cache?.write ?? 0);
+  const output = (tokens?.output ?? 0) + (tokens?.reasoning ?? 0);
   return { id: `chatcmpl-${randomUUID()}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model,
     choices: [{ index: 0, message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }],
-    usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } };
+    ...(input + output > 0 ? { usage: {
+      prompt_tokens: input, completion_tokens: output, total_tokens: input + output,
+      ...(tokens.cache ? { prompt_tokens_details: { cached_tokens: tokens.cache.read ?? 0 } } : {}),
+      ...(tokens.reasoning != null ? { completion_tokens_details: { reasoning_tokens: tokens.reasoning } } : {}),
+    } } : {}) };
 }
 
 // JSON envelopes must be validated before emitting executable tool calls.
@@ -143,6 +149,6 @@ export function sendSSE(res, result, includeUsage = false) {
   if (message.content) send({ content: message.content });
   if (message.tool_calls) send({ tool_calls: message.tool_calls.map((t, index) => ({ index, ...t })) });
   send({}, finish_reason);
-  if (includeUsage) res.write(`data: ${JSON.stringify({ ...base, choices: [], usage: result.usage })}\n\n`);
+  if (includeUsage && result.usage) res.write(`data: ${JSON.stringify({ ...base, choices: [], usage: result.usage })}\n\n`);
   res.end('data: [DONE]\n\n');
 }

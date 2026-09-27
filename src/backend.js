@@ -37,7 +37,7 @@ function allowedTools(request) {
 
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
-    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), pendingApprovals: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), pendingApprovals: new Map(), usageBySession: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
   }
   headers() {
     return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
@@ -118,6 +118,8 @@ export class Backend {
       this.toolParts.set(part.callID, { tool: part.tool, input: part.state?.input ?? {} });
       if (this.toolParts.size > 50) this.toolParts.delete(this.toolParts.keys().next().value);
     }
+    const info = event?.type === 'message.updated' ? event.properties?.info : undefined;
+    if (info?.role === 'assistant' && info.tokens && this.usageBySession.has(info.sessionID)) this.usageBySession.set(info.sessionID, info.tokens);
     const sessionID = event?.properties?.sessionID;
     // Liveness is content, not status heartbeats: session.status keeps arriving while a stuck
     // provider sends nothing at all, which is exactly what the watchdog must notice.
@@ -161,6 +163,17 @@ export class Backend {
     }
     if (!Array.isArray(pending)) { this.log('Permission monitor query failed: non-array response'); return cached(); }
     return pending.filter(p => p.sessionID === sessionID);
+  }
+  async handoffUsage(sessionID, signal) {
+    // Abort finishes the interrupted assistant message before session cleanup removes it.
+    try {
+      const messages = await this.request(`/session/${encodeURIComponent(sessionID)}/message?limit=1`, 'GET', undefined, signal, 5000);
+      const info = Array.isArray(messages) ? messages.findLast(m => m.info?.role === 'assistant')?.info : undefined;
+      if (info?.tokens) return info.tokens;
+    } catch (error) {
+      if (!signal?.aborted) this.log(`Usage lookup failed: ${error.code || error.name}`);
+    }
+    return this.usageBySession.get(sessionID);
   }
   // Refuse one native approval, or hand it to the external client. Returns { handoff } when
   // the action was handed over, so the caller can stop this generation and answer with it.
@@ -226,6 +239,7 @@ export class Backend {
     const session = await this.request('/session', 'POST', { title: 'OW Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
     meta.sessionID = session.id;
+    this.usageBySession.set(session.id, undefined);
     if (typeof meta.activity === 'function') { this.active.set(session.id, meta); this.watchEvents(); }
     const guard = new AbortController();
     const rejected = new Set();
@@ -272,6 +286,7 @@ export class Backend {
       let actionRetried = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         meta.steps += 1;
+        this.usageBySession.set(session.id, undefined);
         // Each round gets its own window: a retry is a fresh request, not a continuation.
         this.contentAt.set(session.id, Date.now());
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
@@ -294,7 +309,7 @@ export class Backend {
           successful = true;
           return completion(request.model.id, { role: 'assistant', content: null,
             tool_calls: [{ id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function',
-              function: { name: handoff.name, arguments: JSON.stringify(handoff.arguments) } }] }, undefined);
+              function: { name: handoff.name, arguments: JSON.stringify(handoff.arguments) } }] }, await this.handoffUsage(session.id, signal));
         }
         if (response.info?.error && (request.chatOnly || response.info.error.name !== 'StructuredOutputError')) {
           const error = response.info.error;
@@ -361,7 +376,7 @@ export class Backend {
             successful = true;
             return completion(request.model.id, { role: 'assistant', content: null,
               tool_calls: [{ id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function',
-                function: { name: rescued.name, arguments: JSON.stringify(rescued.arguments) } }] }, undefined);
+                function: { name: rescued.name, arguments: JSON.stringify(rescued.arguments) } }] }, response.info?.tokens ?? await this.handoffUsage(session.id, signal));
           }
           if (attempt < 2 && !signal?.aborted) {
             actionRetried = true;
@@ -377,6 +392,7 @@ export class Backend {
       guard.abort();
       await watch.catch(() => {});
       this.contentAt.delete(session.id);
+      this.usageBySession.delete(session.id);
       for (const [id, permission] of this.pendingApprovals)
         if (permission.sessionID === session.id) this.pendingApprovals.delete(id);
       if (typeof meta.activity === 'function') {
