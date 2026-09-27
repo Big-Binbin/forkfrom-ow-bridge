@@ -88,7 +88,7 @@ async function record(model, ok, error, status, code, durationMs, source = 'requ
   // Keep the raw approval requests so a blocked native action stays diagnosable after the fact.
   const captured = Array.isArray(meta.permissions) && meta.permissions.length ? { lastPermission: { time: result.time, entries: meta.permissions } } : {};
   // A stuck provider is not a verdict on the model: record the attempt, keep it published.
-  if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated', 'upstream_silent'].includes(code)) {
+  if (!ok && source === 'request' && ['invalid_model_output', 'invalid_tool_call', 'native_tool_activity', 'output_truncated'].includes(code)) {
     update({ lastRequest: result, ...captured });
     return;
   }

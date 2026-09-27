@@ -1181,31 +1181,36 @@ test('a reply cut off by the output limit is asked again, compactly', async () =
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
 });
 
-test('a silent upstream is aborted instead of waited on forever', async () => {
-  const request = prepare(body, models);
+test('silent inference remains active past five minutes until the client cancels', async t => {
   const backend = new Backend('http://unused', 'test');
-  backend.silenceLimit = 60;
-  let release;
-  const pending = new Promise(resolve => { release = resolve; });
+  backend.watchEvents = () => {};
+  const controller = new AbortController();
+  const routes = [];
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
   backend.request = async route => {
+    routes.push(route);
     if (route === '/session') return { id: 'ses_silent' };
-    if (route.endsWith('/message')) { await pending; return { info: {}, parts: [] }; }
+    if (route.endsWith('/message')) {
+      entered();
+      return new Promise((resolve, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
+    }
     return [];
   };
-  await assert.rejects(
-    backend.complete(request, undefined, { activity: () => {} }),
-    error => error.code === 'upstream_silent' && /没有任何输出/.test(error.message));
-  release();
+  let failure, finished = false;
+  const running = backend.complete(prepare(body, models), controller.signal, { activity: () => {} })
+    .catch(error => { failure = error; }).finally(() => { finished = true; });
+  try {
+    await started;
+    const later = Date.now() + 600000;
+    t.mock.method(Date, 'now', () => later);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal(finished, false, 'Ten minutes without content must not trigger a proxy-owned cutoff');
+  } finally { controller.abort(new Error('client canceled')); await running; }
+  assert.equal(failure.message, 'client canceled');
+  assert.ok(routes.includes('/session/ses_silent/abort'));
+  assert.ok(routes.includes('/session/ses_silent'));
 });
-
-test('a content event keeps the watchdog quiet, a status heartbeat does not', async () => {
-  const backend = new Backend('http://unused', 'test');
-  backend.handleEvent({ type: 'session.status', properties: { sessionID: 'ses_x', status: { type: 'busy' } } });
-  assert.equal(backend.contentAt.has('ses_x'), false, 'A busy heartbeat is not liveness');
-  backend.handleEvent({ type: 'message.part.updated', properties: { sessionID: 'ses_x', part: { type: 'reasoning' } } });
-  assert.ok(Date.now() - backend.contentAt.get('ses_x') < 1000, 'Streaming reasoning counts as liveness');
-});
-
 
 test('native handoff and translation honor the current tool choice', async () => {
   const offered = ['Bash', 'Read'].map(name => ({ type: 'function', function: { name,

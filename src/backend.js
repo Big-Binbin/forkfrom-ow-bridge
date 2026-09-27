@@ -8,10 +8,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 // Keep official approval gates active. No native operation is ever approved.
 export const nativePermissions = { '*': 'ask', question: 'deny', websearch: 'deny', codesearch: 'deny', webfetch: 'deny', task: 'deny', plan_enter: 'deny', plan_exit: 'deny', todowrite: 'deny' };
 
-// A provider that has sent nothing for this long is not slow, it is stuck. Measured against
-// content events only, so a model that streams reasoning for minutes is never cut off.
-export const SILENCE_LIMIT_MS = 300000;
-
 export function freeModels(providers) {
   const provider = providers.all?.find(p => p.id === 'opencode');
   if (!provider) throw new Error('OpenCode provider missing');
@@ -37,7 +33,7 @@ function allowedTools(request) {
 
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
-    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), pendingApprovals: new Map(), usageBySession: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), pendingApprovals: new Map(), usageBySession: new Map(), translator: null });
   }
   headers() {
     return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
@@ -67,8 +63,7 @@ export class Backend {
   }
 
   // One event-stream connection serves every in-flight request: OpenCode reports its own
-  // upstream retries there, which the request/response path never exposes. A 5-minute wait
-  // with no output at all is a real user-visible failure mode, so it must be observable.
+  // upstream retries there, which the request/response path never exposes.
   watchEvents() {
     if (this.events) return;
     const controller = new AbortController();
@@ -121,9 +116,6 @@ export class Backend {
     const info = event?.type === 'message.updated' ? event.properties?.info : undefined;
     if (info?.role === 'assistant' && info.tokens && this.usageBySession.has(info.sessionID)) this.usageBySession.set(info.sessionID, info.tokens);
     const sessionID = event?.properties?.sessionID;
-    // Liveness is content, not status heartbeats: session.status keeps arriving while a stuck
-    // provider sends nothing at all, which is exactly what the watchdog must notice.
-    if (sessionID && (event?.type === 'message.part.updated' || ['permission.asked', 'permission.updated'].includes(event?.type))) this.contentAt.set(sessionID, Date.now());
     const meta = sessionID ? this.active.get(sessionID) : undefined;
     if (!meta || typeof meta.activity !== 'function') return;
     const status = event.properties?.status;
@@ -246,12 +238,6 @@ export class Backend {
     const guardSignal = AbortSignal.any([guard.signal, ...(signal ? [signal] : [])]);
     const watch = (async () => {
       while (!guardSignal.aborted) {
-        // Only requests whose progress we can actually observe are watched: a probe has its own
-        // deadline and no event stream.
-        if (typeof meta.activity === 'function') {
-          const silentFor = Date.now() - (this.contentAt.get(session.id) ?? Date.now());
-          if (silentFor > this.silenceLimit) throw new BridgeError(`上游 ${Math.round(silentFor / 1000)} 秒没有任何输出，已中止；请切换模型或重试`, 504, 'upstream_silent');
-        }
         const pending = await this.pendingPermissions(session.id, guardSignal);
         // A failed poll does not grant approval: native actions remain waiting.
         // Keep polling while inference runs; cancellation and inference errors still propagate.
@@ -287,8 +273,6 @@ export class Backend {
       for (let attempt = 0; attempt < 3; attempt++) {
         meta.steps += 1;
         this.usageBySession.set(session.id, undefined);
-        // Each round gets its own window: a retry is a fresh request, not a continuation.
-        this.contentAt.set(session.id, Date.now());
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
         let handoff = response?.handoff ?? null;
         if (!handoff) {
@@ -391,7 +375,6 @@ export class Backend {
     } finally {
       guard.abort();
       await watch.catch(() => {});
-      this.contentAt.delete(session.id);
       this.usageBySession.delete(session.id);
       for (const [id, permission] of this.pendingApprovals)
         if (permission.sessionID === session.id) this.pendingApprovals.delete(id);
