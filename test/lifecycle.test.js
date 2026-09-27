@@ -20,7 +20,7 @@ test('startup imports once; repeated checks and reads require import; exit remov
   await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port;
   await new Promise(resolve => socket.close(resolve));
-  const child = spawn(process.execPath, ['--loader', fileURLToPath(new URL('./fixtures/runtime-loader.mjs', import.meta.url)), 'src/main.js'], {
+  const child = spawn(process.execPath, ['--loader', new URL('./fixtures/runtime-loader.mjs', import.meta.url).href, 'src/main.js'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: { ...process.env, BUDDY_DATA_DIR: root, BUDDY_PORT: String(port), BUDDY_MODELS_FILE: config, BUDDY_NO_SYNC: '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
