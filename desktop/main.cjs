@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const { createWriteStream } = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { activityText } = require('./activity.cjs');
 
 app.setName('OW Bridge');
 app.setAppUserModelId('local.buddy.bridge');
@@ -30,9 +31,7 @@ function showWindow() {
 function activityLabel(s) {
   const a = (s.activity || [])[0];
   if (!a) return s.probe?.running ? '正在检测模型…' : s.message || '正在启动…';
-  const seconds = Math.max(0, Math.round((a.waitedMs || 0) / 1000));
-  const retry = a.status === 'retry' ? ` · 第 ${a.attempt ?? '?'} 次重试` : '';
-  return `请求中：${String(a.model || '').replace('opencode/', '')} · ${seconds} 秒${retry}`;
+  return activityText(a);
 }
 function publish() {
   if (window && !window.isDestroyed()) window.webContents.send('state', { ...state, actionBusy });

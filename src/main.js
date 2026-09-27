@@ -105,6 +105,7 @@ function publishActivity() {
   update({ activity: [...activities.values()].map(a => ({
     model: a.model, sessionID: a.sessionID, status: a.status || 'waiting',
     waitedMs: now - a.startedAt, sinceEventMs: a.lastEventAt ? now - a.lastEventAt : null,
+    sinceContentMs: a.lastContentAt ? now - a.lastContentAt : null, repairModel: a.repairModel,
     attempt: a.attempt, ...(a.error ? { error: a.error } : {}),
   })) });
 }
@@ -113,13 +114,14 @@ function noteActivity(progress) {
   if (progress.type === 'request.done') { activities.delete(progress.sessionID); publishActivity(); return; }
   const entry = activities.get(progress.sessionID) || { sessionID: progress.sessionID, startedAt: Date.now(), status: 'waiting' };
   Object.assign(entry, progress, { model: progress.model || entry.model, lastEventAt: Date.now() });
+  if (progress.content) entry.lastContentAt = Date.now();
   activities.set(progress.sessionID, entry);
   // Elapsed time must keep growing while the upstream stays quiet.
   if (!activityTimer) {
     activityTimer = setInterval(() => { if (activities.size) publishActivity(); else { clearInterval(activityTimer); activityTimer = null; } }, 5000);
     activityTimer.unref?.();
   }
-  const urgent = progress.status === 'retry' || progress.status === 'permission' || progress.status === 'busy' || progress.error;
+  const urgent = progress.type === 'bridge.phase' || progress.status === 'retry' || progress.status === 'permission' || progress.error;
   const now = Date.now();
   if (!urgent && now - (entry.writtenAt || 0) < 1000) return;
   entry.writtenAt = now;

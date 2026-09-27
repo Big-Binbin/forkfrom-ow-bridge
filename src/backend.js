@@ -121,13 +121,24 @@ export class Backend {
     const status = event.properties?.status;
     const progress = { sessionID, model: meta.model, type: event.type, at: Date.now() };
     if (event.type === 'session.status' && status) {
-      progress.status = status.type;
+      if (status.type === 'retry' || (status.type === 'busy' && (!meta.stage || meta.stage === 'retry'))) progress.status = status.type === 'busy' ? 'waiting' : 'retry';
       if (status.type === 'retry') Object.assign(progress, { attempt: status.attempt, message: status.message, next: status.next });
     }
     if (event.type === 'session.error') progress.error = event.properties?.error?.data?.message || event.properties?.error?.name || '上游错误';
-    if (event.type === 'message.part.updated') progress.part = event.properties?.part?.type;
+    if (part && ['text', 'reasoning'].includes(part.type) && part.text) {
+      progress.content = true; progress.status = part.type === 'reasoning' ? 'reasoning' : 'receiving';
+    }
+    if (event.type === 'message.part.delta' && event.properties?.delta) {
+      progress.content = true; progress.status = 'receiving';
+    }
     if (['permission.asked', 'permission.updated'].includes(event.type)) progress.status = 'permission';
+    if (progress.status) meta.stage = progress.status;
     meta.activity(progress);
+  }
+
+  progress(meta, status, extra = {}) {
+    meta.stage = status;
+    meta.activity?.({ sessionID: meta.sessionID, model: meta.model, type: 'bridge.phase', status, ...extra });
   }
 
   async reject(permission, message, signal) {
@@ -186,6 +197,7 @@ export class Backend {
       if (native) meta.handoffMiss = { native, input: handoffInput(action, p), offeredTools: request.tools.length };
     }
     if (handoff) {
+      this.progress(meta, 'handoff');
       await this.reject(p, 'This native action is executed by the external client instead.', signal).catch(() => {});
       return { handoff };
     }
@@ -213,8 +225,18 @@ export class Backend {
     // What the client would run is still decided by the client's own rules: a name it did not offer,
     // or arguments that break its schema, are refused no matter how the translation was reached.
     return repair({
-      complete: inner => this.complete(inner, signal ? AbortSignal.any([deadline, signal]) : deadline, {}),
-      translator: this.translator, request: { ...request, tools: allowedTools(request) }, shape, material, blocked, meta, log: this.log,
+      complete: inner => this.complete(inner, signal ? AbortSignal.any([deadline, signal]) : deadline, {
+        model: inner.model.id,
+        ...(meta.activity ? { activity: progress => {
+          if (progress.type !== 'request.done') meta.activity({ sessionID: meta.sessionID, model: meta.model,
+            type: 'bridge.repair', status: 'repair', repairModel: inner.model.id, ...(progress.content ? { content: true } : {}) });
+        } } : {}),
+      }),
+      translator: (...args) => {
+        const model = this.translator?.(...args);
+        this.progress(meta, 'repair', { repairModel: model || null });
+        return model;
+      }, request: { ...request, tools: allowedTools(request) }, shape, material, blocked, meta, log: this.log,
       validate: shape === 'action'
         ? candidate => {
           const action = validateAction(candidate, allowedTools(request));
@@ -233,6 +255,7 @@ export class Backend {
     meta.sessionID = session.id;
     this.usageBySession.set(session.id, undefined);
     if (typeof meta.activity === 'function') { this.active.set(session.id, meta); this.watchEvents(); }
+    this.progress(meta, 'waiting');
     const guard = new AbortController();
     const rejected = new Set();
     const guardSignal = AbortSignal.any([guard.signal, ...(signal ? [signal] : [])]);
@@ -272,8 +295,10 @@ export class Backend {
       let actionRetried = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         meta.steps += 1;
+        this.progress(meta, attempt ? 'correcting' : 'waiting');
         this.usageBySession.set(session.id, undefined);
         const response = await Promise.race([watch, this.request(`${route}/message`, 'POST', payload, signal, null)]);
+        this.progress(meta, 'checking');
         let handoff = response?.handoff ?? null;
         if (!handoff) {
           // Close the race: an approval raised just before the response landed must still be
