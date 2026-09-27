@@ -1199,3 +1199,35 @@ test('a content event keeps the watchdog quiet, a status heartbeat does not', as
   backend.handleEvent({ type: 'message.part.updated', properties: { sessionID: 'ses_x', part: { type: 'reasoning' } } });
   assert.ok(Date.now() - backend.contentAt.get('ses_x') < 1000, 'Streaming reasoning counts as liveness');
 });
+
+
+test('native handoff and translation honor the current tool choice', async () => {
+  const offered = ['Bash', 'Read'].map(name => ({ type: 'function', function: { name,
+    parameters: { type: 'object', properties: name === 'Bash' ? { command: { type: 'string' } } : { file_path: { type: 'string' } },
+      required: [name === 'Bash' ? 'command' : 'file_path'] } } }));
+  for (const [choice, expected, handed] of [
+    ['none', [], false],
+    [{ type: 'function', function: { name: 'Read' } }, ['Read'], false],
+    [{ type: 'function', function: { name: 'Bash' } }, ['Bash'], true],
+    ['auto', ['Bash', 'Read'], true],
+    ['required', ['Bash', 'Read'], true],
+  ]) {
+    const request = prepare({ ...body, tools: offered, tool_choice: choice }, models);
+    const backend = new Backend('http://unused', 'test');
+    backend.toolParts.set('blocked', { tool: 'bash', input: { command: 'pwd' } });
+    const replies = [];
+    backend.reject = async (p, message) => { replies.push(message); };
+    const meta = { nativeAttempts: 0, permissions: [] };
+    const direct = await backend.handlePermission({ id: 'p', tool: { callID: 'blocked' } }, request, undefined, new Set(), meta);
+    assert.equal(Boolean(direct?.handoff), handed);
+    assert.equal(replies.length, 1);
+    backend.translator = () => 'opencode/translator';
+    backend.complete = async inner => {
+      assert.deepEqual(JSON.parse(inner.text).tools.map(t => t.name), expected);
+      // Even a translator ignoring its narrowed catalog must not bypass the client's choice.
+      return { choices: [{ message: { content: JSON.stringify({ name: 'Bash', arguments: { command: 'pwd' } }) } }] };
+    };
+    const translated = await backend.translate(request, 'action', {}, {}, {}, undefined);
+    assert.equal(Boolean(translated), handed);
+  }
+});

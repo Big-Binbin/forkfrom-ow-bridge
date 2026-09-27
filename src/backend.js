@@ -31,6 +31,10 @@ export function shrinkPermission(value, limit = 400) {
   return value;
 }
 
+function allowedTools(request) {
+  return request.choice === 'none' ? [] : request.tools.filter(t => !request.forced || t.function.name === request.forced);
+}
+
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
     Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
@@ -159,7 +163,7 @@ export class Backend {
     if (meta.permissions.length < 5) meta.permissions.push(shrinkPermission(p));
     const action = callID ? await this.blockedAction(callID, signal) : null;
     const native = action?.tool ?? (p.metadata?.command ? 'bash' : null);
-    const handoff = native ? buildHandoff({ native, input: handoffInput(action, p), tools: request.tools }) : null;
+    const handoff = native ? buildHandoff({ native, input: handoffInput(action, p), tools: allowedTools(request) }) : null;
     if (!handoff) {
       meta.handoffCheck = { native: native ?? null, offeredTools: request.tools.length, detail: action?.failure ?? 'arguments incomplete for the external schema' };
       // The action exists and only its expression is missing: keep it for the translator.
@@ -194,9 +198,13 @@ export class Backend {
     // or arguments that break its schema, are refused no matter how the translation was reached.
     return repair({
       complete: inner => this.complete(inner, signal ? AbortSignal.any([deadline, signal]) : deadline, {}),
-      translator: this.translator, request, shape, material, blocked, meta, log: this.log,
+      translator: this.translator, request: { ...request, tools: allowedTools(request) }, shape, material, blocked, meta, log: this.log,
       validate: shape === 'action'
-        ? candidate => validateAction(candidate, request.tools)
+        ? candidate => {
+          const action = validateAction(candidate, allowedTools(request));
+          decode(JSON.stringify({ content: '', calls: [action] }), request);
+          return action;
+        }
         : candidate => decode(JSON.stringify(candidate), request),
     });
   }
@@ -231,7 +239,7 @@ export class Backend {
     })();
     let successful = false;
     try {
-      const tools = request.choice === 'none' ? [] : request.tools.filter(t => !request.forced || t.function.name === request.forced);
+      const tools = allowedTools(request);
       const callsSchema = { type: 'array', ...(request.parallel ? {} : { maxItems: 1 }),
         ...(request.choice === 'required' || request.forced ? { minItems: 1 } : {}),
         ...(tools.length ? { items: { anyOf: tools.map(({ function: tool }) => ({
