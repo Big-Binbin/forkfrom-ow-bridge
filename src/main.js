@@ -5,7 +5,7 @@ import os from 'node:os';
 import { resolveModelsFile, validateModelsFile } from './workbuddy-config.js';
 import { dataDirectory } from './platform.js';
 import { randomBytes } from 'node:crypto';
-import { findRuntime, startBackend, PINNED_VERSION } from './runtime.js';
+import { findRuntime, startBackend } from './runtime.js';
 import { createServer } from './server.js';
 import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
@@ -36,7 +36,7 @@ const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, binary, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: PINNED_VERSION, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
+let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -175,6 +175,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
 }
 
 function watchRuntime(current) {
+  update({ opencodeVersion: current.version });
   current.child.on('exit', () => {
     if (!stopping && runtime === current) {
       update({ phase: 'error', message: 'OpenCode 服务退出，请重启代理' });
