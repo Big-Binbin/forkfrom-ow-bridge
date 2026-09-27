@@ -1113,7 +1113,8 @@ test('the material carries the external conversation the translation must be gro
   await backend.complete(request, undefined, {});
   const body_ = JSON.parse(messages.get('ses_1').parts[0].text);
   assert.deepEqual(body_.material.conversation.at(-1), { role: 'user', content: 'Write a file' });
-  assert.match(body_.conventions, /file_path is absolute/);
+  assert.equal(body_.tools[0].description, tools[0].function.description);
+  assert.match(body_.conventions, /complete supplied file content/);
 });
 
 test('with nothing to infer from, the model is told what failed and asked once more', async () => {

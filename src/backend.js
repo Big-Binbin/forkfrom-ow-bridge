@@ -327,7 +327,7 @@ export class Backend {
             // Still unreadable: hand the material to the translator. Detection never translates, so a
             // probe keeps measuring the model rather than the translator's help.
             if (!meta.probe) {
-              const translated = await this.translate(request, 'envelope', rawMaterial(response, request), meta, null, signal);
+              const translated = await this.translate(request, 'envelope', rawMaterial(response, request, error), meta, null, signal);
               if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
               // Nothing was inferable, so the model gets one more round with the failure spelled out
               // instead of the turn simply dying here.

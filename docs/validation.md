@@ -187,3 +187,31 @@ Big Pickle 的一轮跑了 4.4 分钟后报 `Model output was truncated`。实�
 - **不撤下模型**：`upstream_silent` 已加入 `record()` 的"只记录、不改发布集合"名单。一次上游卡住是上游的事，不该让模型从客户端列表里消失。
 
 回归测试：`/message` 永不返回时必须在看门狗窗口后以 `upstream_silent` 失败（测试把窗口压到 60 毫秒）；并且 `session.status` 心跳不刷新存活时间、而 `message.part.updated` 会。
+
+
+## 转换指导与材料完整性（2026-09-27）
+
+本次先查阅 Git 提交记录、本文历史故障记录、`docs/mimo-diagnostic.md`、既有测试，以及本机 WorkBuddy 留存的 `fb8e5f8e-9213-42f7-a4dc-4d955951bb95.jsonl`。运行时 session/message/part 表当前均为空，应用日志未保留完整历史响应，因此没有声称恢复了已删除的上游原始报文。
+
+可复核证据：
+
+- WorkBuddy 记录中有一次 Write 参数为 `filePath` 与 `content`，正文 46,649 字符；对应工具结果明确报 `file_path` 缺失。另一次 Write 正文为 30,554 字符。只统计字段及长度，不把用户正文提交到仓库。
+- 将这些真实参数封装成现有 StructuredOutput part 形态，本地回放旧 `rawMaterial()`：`parts[0].input.calls[0]` 变成字符串 `[object]`。这是材料函数的深度裁剪复现，不等同于证明该历史调用当时经过了辅助模型。
+- 工具清单转换只取 name/parameters，确实丢弃客户端的 description；此前通用 Skill 指导却固定要求 name/args，可能与实际定义不同。
+
+修改：
+
+- 保留客户端工具 description；指导明确以本次定义为准，通用用法只作补充。去掉 cmd→POSIX、apply_patch→普通 Edit 等不可靠的通用指导别名（未改动原生转交映射表）。
+- 明确修复格式与等价字段映射、保留动作与内容，不把 Write 擅自换成 Edit；完整内容缺失时交回，不凭片段重写整个文件。执行、校验与审批归 WorkBuddy。
+- 保留响应 parts 原形（含 state、input、error 等）、完整文本对话和调用 ID；去掉深度/字符串/历史条数裁剪，同时不再重复拼接 parts 中的 text。代价是辅助模型的输入可能更大，仍可能触及其上下文上限，本次不增加新的截断规则。
+- 两种转换模式都可用简单的 `{"unrepairable":true}` 表示材料不足，不增加举证表格或其他必填元数据。沿用原有回退流程：信封模式回原模型最后一次纠正；动作模式保留原模型回复。
+- 向信封转换提供实际 adapterError，便于定位失败原因。
+
+验证：先写回归用例，旧实现出现 `[object]` 和无法辨别材料不足的失败；修改后 71 项测试通过。用真实历史 Write 参数在本地重新回放，46,649、30,554、197 字符的正文及参数均完整保留。测试夹具使用等长合成文本，不携带用户正文。
+
+真实模型检查（隔离 OpenCode 1.18.32，`opencode/space-bunny-free`，合成数据，未执行任何外部工具）：
+
+- filePath→file_path：10,725 ms，正确转换，保留相对路径和完整正文。
+- 正文缺失：1,312 ms，返回 unrepairable，记录为 insufficient material，没有编造正文。
+
+复核脚本与结果在工作目录 `work/repair-review/`，不依赖生产代理或写入 WorkBuddy 配置。以上验证不能替代完整幻灯片任务实测，也不证明所有免费模型均有相同表现。
