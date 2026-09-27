@@ -37,7 +37,7 @@ function allowedTools(request) {
 
 export class Backend {
   constructor(base, password, timeout, log = () => {}) {
-    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
+    Object.assign(this, { base, password, timeout, log, active: new Map(), events: null, toolParts: new Map(), pendingApprovals: new Map(), translator: null, silenceLimit: SILENCE_LIMIT_MS, contentAt: new Map() });
   }
   headers() {
     return { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` };
@@ -108,6 +108,9 @@ export class Backend {
   }
   handleEvent(wrapper) {
     const event = wrapper?.payload ?? wrapper;
+    if (['permission.asked', 'permission.updated'].includes(event?.type) && event.properties?.id)
+      this.pendingApprovals.set(event.properties.id, event.properties);
+    if (event?.type === 'permission.replied') this.pendingApprovals.delete(event.properties?.requestID);
     // The tool part carries the name and arguments of a call that an approval gate blocked.
     // It arrives here before the approval does, and the HTTP listing of messages does not.
     const part = event?.type === 'message.part.updated' ? event.properties?.part : undefined;
@@ -118,7 +121,7 @@ export class Backend {
     const sessionID = event?.properties?.sessionID;
     // Liveness is content, not status heartbeats: session.status keeps arriving while a stuck
     // provider sends nothing at all, which is exactly what the watchdog must notice.
-    if (sessionID && (event?.type === 'message.part.updated' || event?.type === 'permission.updated')) this.contentAt.set(sessionID, Date.now());
+    if (sessionID && (event?.type === 'message.part.updated' || ['permission.asked', 'permission.updated'].includes(event?.type))) this.contentAt.set(sessionID, Date.now());
     const meta = sessionID ? this.active.get(sessionID) : undefined;
     if (!meta || typeof meta.activity !== 'function') return;
     const status = event.properties?.status;
@@ -129,12 +132,14 @@ export class Backend {
     }
     if (event.type === 'session.error') progress.error = event.properties?.error?.data?.message || event.properties?.error?.name || '上游错误';
     if (event.type === 'message.part.updated') progress.part = event.properties?.part?.type;
-    if (event.type === 'permission.updated') progress.status = 'permission';
+    if (['permission.asked', 'permission.updated'].includes(event.type)) progress.status = 'permission';
     meta.activity(progress);
   }
 
-  reject(permission, message, signal) {
-    return this.request(`/permission/${encodeURIComponent(permission.id)}/reply`, 'POST', { reply: 'reject', message }, signal, 5000);
+  async reject(permission, message, signal) {
+    const result = await this.request(`/permission/${encodeURIComponent(permission.id)}/reply`, 'POST', { reply: 'reject', message }, signal, 5000);
+    this.pendingApprovals.delete(permission.id);
+    return result;
   }
   // The name of the blocked call comes from the event stream; the arguments may still be
   // empty while the part is pending, and handoffInput() then fills them from the approval.
@@ -147,13 +152,14 @@ export class Backend {
     return { failure: 'no event carried this call ID' };
   }
   async pendingPermissions(sessionID, signal) {
+    const cached = () => [...this.pendingApprovals.values()].filter(p => p.sessionID === sessionID);
     let pending;
     try { pending = await this.request('/permission', 'GET', undefined, signal, 5000); }
     catch (error) {
-      if (!signal?.aborted) this.log(`Permission monitor query failed: ${error.code || error.name}${error.status ? ` (HTTP ${error.status})` : ''}`);
-      return null;
+      if (!signal?.aborted) this.log(`Permission monitor query failed: ${error.code || error.name}${error.status ? ` (HTTP ${error.status})` : ''}: ${error.message}`);
+      return cached();
     }
-    if (!Array.isArray(pending)) { this.log('Permission monitor query failed: non-array response'); return null; }
+    if (!Array.isArray(pending)) { this.log('Permission monitor query failed: non-array response'); return cached(); }
     return pending.filter(p => p.sessionID === sessionID);
   }
   // Refuse one native approval, or hand it to the external client. Returns { handoff } when
@@ -371,6 +377,8 @@ export class Backend {
       guard.abort();
       await watch.catch(() => {});
       this.contentAt.delete(session.id);
+      for (const [id, permission] of this.pendingApprovals)
+        if (permission.sessionID === session.id) this.pendingApprovals.delete(id);
       if (typeof meta.activity === 'function') {
         meta.activity({ sessionID: session.id, model: meta.model, type: 'request.done' });
         this.active.delete(session.id);

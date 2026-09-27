@@ -238,3 +238,5 @@ WorkBuddy 历史记录显示 HTTP/流级格式错误会结束当前请求，需�
 18:58:56 的本机状态记录显示 Ling 请求在 4154ms 后因 permission_monitor_error 结束，nativeAttempts=0。旧代码吞掉权限查询的底层异常，无法从历史记录确认此次查询失败的原始原因。
 
 本地 HTTP 测试复现单次 ECONNRESET 导致整个推理被 Permission monitor unavailable 中止。修改后查询失败保留错误类型并继续现有轮询，不批准原生动作；回归覆盖断连及异常响应后正常完成、恢复后转交待审批动作、持续查询失败时客户端取消和推理连接错误仍传播。77 项测试通过。未重放用户的真实任务。
+
+后续真实卡住请求确认 `/permission` 持续 HTTP 400：`Expected JSON value, got undefined at [0]["metadata"]["path"]`，并非一次短暂断连。运行中 OpenCode 的 `/doc` 声明 `permission.asked` / `permission.replied`，旧代理只识别 `permission.updated`。新增审批事件缓存，在列表查询失败时按 session 使用缓存处理转交/拒绝，成功回复和结束会话后清理。日志补充上游错误详情。78 项测试通过，包含持续 400 时从审批事件转交工具的场景；真实用户任务仍需重新继续验证。

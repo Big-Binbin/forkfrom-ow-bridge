@@ -1287,3 +1287,33 @@ test('unavailable permission polling preserves client cancellation and inference
     } finally { clearTimeout(timer); fake.closeAllConnections(); fake.close(); }
   }
 });
+
+test('permission events preserve handoff when the permission listing cannot serialize metadata', async () => {
+  const events = []; let waiting = false; let polls = 0;
+  const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } };
+  const fake = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    events.push(`${req.method} ${req.url}`);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/session') return res.end('{"id":"ses_handoff"}');
+    if (req.url === '/permission') { polls++; res.statusCode = 400; return res.end(JSON.stringify({ name: 'BadRequest', data: { message: 'Expected JSON value, got undefined at metadata.path' } })); }
+    if (req.url === '/session/ses_handoff/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
+      { type: 'tool', callID: 'native_bash', tool: 'bash', state: { status: 'running', input: { command: 'ls /tmp', description: 'list the directory' } } }] }]));
+    if (req.url === '/session/ses_handoff/message') { waiting = true; return; }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test');
+  backend.handleEvent({ type: 'permission.asked', properties: { id: 'per_bash', sessionID: 'ses_handoff', permission: 'grep', metadata: {}, tool: { callID: 'native_bash' } } });
+  // The event stream reports the blocked call; the approval only carries its call ID.
+  backend.toolParts.set('native_bash', { tool: 'bash', input: { command: 'ls /tmp', description: 'list the directory' } });
+  try {
+    const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
+    const call = result.choices[0].message.tool_calls[0];
+    assert.equal(call.function.name, 'Bash');
+    assert.ok(polls >= 1);
+    assert.equal(backend.pendingApprovals.size, 0, 'Session cleanup removes cached approvals');
+    assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp', description: 'list the directory' });
+    assert.ok(events.includes('POST /session/ses_handoff/abort'), 'The generation is stopped once the action is handed over');
+  } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
+});
