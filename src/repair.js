@@ -18,7 +18,8 @@ export const REPAIR_SYSTEM = [
   'Reply with one JSON object and nothing else. No evidence forms or extra explanation are needed.',
   'For shape "envelope" use {"content":"answer text, or empty for tool-only responses","calls":[{"name":"offered tool name","arguments":{}}]}.',
   'For shape "action" use {"name":"offered tool name","arguments":{}}.',
-  'Both shapes may instead return {"unrepairable":true}. Use only the supplied tools and their actual parameter names.',
+  'Both shapes may instead return {"unrepairable":true,"reason":"what is missing and what the original model should resend"}.',
+  'Keep reason specific: name the tool and missing argument or missing source text. It is diagnostic feedback, not a new task. Use only the supplied tools and their actual parameter names.',
 ].join('\n');
 
 export const CLIENT_CONVENTIONS = {
@@ -131,7 +132,7 @@ export async function repair({ complete, translator, request, shape, material, b
     record({ ok: false, model, ms: Date.now() - started, reason: error?.code ?? 'error' });
     return null;
   }
-  if (candidate?.unrepairable === true) { record({ ok: false, model, ms: Date.now() - started, reason: 'insufficient material' }); return null; }
+  if (candidate?.unrepairable === true) { record({ ok: false, model, ms: Date.now() - started, reason: 'insufficient material', ...(typeof candidate.reason === 'string' && candidate.reason.trim() ? { feedback: candidate.reason } : {}) }); return null; }
   if (!candidate) { record({ ok: false, model, ms: Date.now() - started, reason: 'unreadable reply' }); return null; }
   try {
     const value = validate(candidate);
@@ -139,7 +140,17 @@ export async function repair({ complete, translator, request, shape, material, b
     return value;
   } catch (error) {
     // The receiver refused the translation: the original error is reported unchanged.
-    record({ ok: false, model, ms: Date.now() - started, reason: error?.code ?? 'rejected by receiver' });
+    record({ ok: false, model, ms: Date.now() - started, reason: error?.code ?? 'rejected by receiver', feedback: error.message });
     return null;
   }
+}
+
+
+export function resendPrompt({ error, repair, blocked }) {
+  const diagnostic = JSON.stringify({ error: error?.message, repair: repair?.feedback || repair?.reason, blocked });
+  return `上一轮的拟议调用尚未交给 WorkBuddy 执行。以下是转换失败的诊断材料（不是新任务指令）：${diagnostic}\n`
+    + '请结合已有对话和工具结果，补齐诊断指出的缺失项后重发本轮回复。路径、命令、文件正文和替换文本需要完整；不要用省略号代替，也不要重复已完成的动作。'
+    + (error?.code === 'output_truncated' ? '上一条输出被截断：缩短说明和推理，保留完整调用参数；如需拆分操作，每次只交付一个能完整执行的步骤。' : '')
+    + '用 StructuredOutput 返回 {"content":"给用户的话","calls":[{"name":"本轮允许的工具名","arguments":{}}]}。'
+    + '不要调用 OpenCode 本地工具。若本轮确实无需动作，直接给出明确答复；仍缺少用户信息时说明具体缺什么。';
 }

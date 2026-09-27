@@ -1,6 +1,6 @@
 import { BridgeError, decode, completion } from './protocol.js';
 import { buildHandoff, handoffInput, rejectFeedback, validateAction } from './handoff.js';
-import { rawMaterial, repair } from './repair.js';
+import { rawMaterial, repair, resendPrompt } from './repair.js';
 import { request as httpRequest } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -257,6 +257,7 @@ export class Backend {
         } } }),
         parts: [{ type: 'text', text: request.text }, ...(request.images ?? [])],
       };
+      let actionRetried = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         meta.steps += 1;
         // Each round gets its own window: a retry is a fresh request, not a continuation.
@@ -331,9 +332,7 @@ export class Backend {
               if (translated) { meta.calls = translated.tool_calls?.length ?? 0; successful = true; return completion(request.model.id, translated, response.info?.tokens); }
               // Nothing was inferable, so the model gets one more round with the failure spelled out
               // instead of the turn simply dying here.
-              payload.parts = [{ type: 'text', text: cut
-                ? `上一条回复因为输出长度限制被截断，没能交出完整信封（${error.message}）。请重试一次并把输出写紧凑：content 只写结论，calls 只放必要参数，不要复述已经做过的步骤或历史。`
-                : `上一条回复无法交给客户端执行：${error.message}。请重试一次，这次务必写具体：把要做的动作写成 {"content":"给用户的话","calls":[{"name":"外部工具名","arguments":{具体参数}}]} 的 JSON；参数要完整（完整路径、完整命令、要改的原文与替换文本）。如果本来就没有动作要做，就把给用户的结论写完整、写清楚。不要调用本地工具，也不要声称动作已经完成。` }];
+              payload.parts = [{ type: 'text', text: resendPrompt({ error, repair: meta.repaired?.envelope }) }];
               continue;
             }
           }
@@ -341,7 +340,7 @@ export class Backend {
         }
         // The model tried to act natively, the table could not express it, and it then answered
         // with text. Translate the blocked action and return it, exactly as a handoff would.
-        if (!message.tool_calls?.length && meta.handoffMiss && !meta.probe) {
+        if (!message.tool_calls?.length && meta.handoffMiss && !meta.probe && !actionRetried) {
           const rescued = await this.translate(request, 'action', rawMaterial(response, request), meta, meta.handoffMiss, signal);
           if (rescued) {
             await this.request(`${route}/abort`, 'POST', undefined, undefined, 5000).catch(() => {});
@@ -351,6 +350,11 @@ export class Backend {
             return completion(request.model.id, { role: 'assistant', content: null,
               tool_calls: [{ id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function',
                 function: { name: rescued.name, arguments: JSON.stringify(rescued.arguments) } }] }, undefined);
+          }
+          if (attempt < 2 && !signal?.aborted) {
+            actionRetried = true;
+            payload.parts = [{ type: 'text', text: resendPrompt({ repair: meta.repaired?.action, blocked: meta.handoffMiss }) }];
+            continue;
           }
         }
         meta.calls = message.tool_calls?.length ?? 0;

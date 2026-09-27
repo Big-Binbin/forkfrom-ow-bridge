@@ -27,10 +27,12 @@ test('translation can explicitly decline incomplete material and return control 
   const backend = new Backend('http://unused', 'test');
   backend.translator = () => 'opencode/translator';
   let sessions = 0, turns = 0;
+  const sent = [];
   backend.request = async (route, method, payload) => {
     if (route === '/session') return { id: `s${sessions++}` };
     if (route.endsWith('/message')) {
-      if (route.startsWith('/session/s1/')) return { parts: [{ type: 'text', text: '{"unrepairable":true}' }] };
+      if (route.startsWith('/session/s0/')) sent.push(payload.parts[0].text);
+      if (route.startsWith('/session/s1/')) return { parts: [{ type: 'text', text: '{"unrepairable":true,"reason":"Write.content is missing; resend the complete file body."}' }] };
       turns++;
       if (turns < 3) return { info: { structured: { content: 5, calls: [] } }, parts: [] };
       return { info: { structured: { content: '', calls: [{ name: 'Write', arguments: { file_path: '/external/file', content: 'complete' } }] } }, parts: [] };
@@ -40,6 +42,37 @@ test('translation can explicitly decline incomplete material and return control 
   const meta = {};
   const result = await backend.complete(request, undefined, meta);
   assert.equal(turns, 3);
+  assert.match(sent.at(-1), /Write.content is missing/);
   assert.equal(meta.repaired.envelope.reason, 'insufficient material');
+  assert.equal(result.choices[0].message.tool_calls[0].function.name, 'Write');
+});
+
+
+test('a blocked action that cannot be repaired asks the original model for the missing detail', async () => {
+  const models = [{ id: 'opencode/test' }];
+  const request = prepare({ model: models[0].id, tools, messages: [{ role: 'user', content: 'Write the complete file.' }] }, models);
+  const backend = new Backend('http://unused', 'test');
+  backend.translator = () => 'opencode/translator';
+  backend.toolParts.set('missing', { tool: 'write', input: { filePath: '/external/file' } });
+  let sessions = 0, turns = 0, permission = true;
+  const sent = [];
+  backend.request = async (route, method, payload) => {
+    if (route === '/session') return { id: `s${sessions++}` };
+    if (route === '/permission') {
+      if (!permission) return [];
+      permission = false;
+      return [{ id: 'p', sessionID: 's0', tool: { callID: 'missing' } }];
+    }
+    if (route.endsWith('/message')) {
+      if (route.startsWith('/session/s1/')) return { parts: [{ type: 'text', text: '{"unrepairable":true,"reason":"Write.content is missing; resend full content."}' }] };
+      turns++; sent.push(payload.parts[0].text);
+      return { info: { structured: turns === 1 ? { content: 'Writing next.', calls: [] }
+        : { content: '', calls: [{ name: 'Write', arguments: { file_path: '/external/file', content: 'complete' } }] } }, parts: [] };
+    }
+    return [];
+  };
+  const result = await backend.complete(request, undefined, {});
+  assert.equal(turns, 2);
+  assert.match(sent[1], /Write.content is missing/);
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'Write');
 });

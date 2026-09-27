@@ -793,7 +793,10 @@ test('an unmappable native action is refused by name and the request still compl
       if (held) { const response = held; held = null; response.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}'); }
       return res.end('true');
     }
-    if (req.url === '/session/ses_unmapped/message') { phase = 'asking'; held = res; return; }
+    if (req.url === '/session/ses_unmapped/message') {
+      if (phase === 'replied') return res.end('{"info":{"structured":{"content":"OK","calls":[]}},"parts":[]}');
+      phase = 'asking'; held = res; return;
+    }
     res.end('true');
   });
   const backend = new Backend(await listen(fake), 'test');
@@ -1135,7 +1138,7 @@ test('with nothing to infer from, the model is told what failed and asked once m
   const result = await backend.complete(request, undefined, meta);
   assert.equal(sent.length, 3, 'The format correction, then one explicit retry');
   assert.match(sent[1], /adapter JSON format check/);
-  assert.match(sent[2], /重试一次/);
+  assert.match(sent[2], /补齐诊断指出的缺失项后重发/);
   assert.match(sent[2], /Invalid model response envelope/, 'The model is told what actually failed');
   assert.equal(meta.repaired.envelope.reason, 'no translator available');
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
@@ -1172,7 +1175,7 @@ test('a reply cut off by the output limit is asked again, compactly', async () =
   assert.equal(sent.length, 3, 'Correction, translation attempt, explicit retry');
   assert.match(sent[1], /cut off by the output limit/);
   assert.match(sent[2], /截断/);
-  assert.match(sent[2], /写紧凑/, 'The retry asks for a compact envelope, not a detailed one');
+  assert.match(sent[2], /缩短说明和推理/, 'The retry reduces explanation while preserving complete arguments');
   assert.equal(result.choices[0].message.tool_calls[0].function.name, 'write_file');
 });
 
