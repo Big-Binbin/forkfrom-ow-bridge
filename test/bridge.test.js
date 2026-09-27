@@ -747,7 +747,7 @@ test('an action without an external equivalent is reported by name, not silently
 });
 
 test('a handed-over native action becomes the answer without a second model turn', async () => {
-  const events = []; let waiting = false;
+  const events = []; let waiting = false; let polls = 0;
   const bashTool = { type: 'function', function: { name: 'Bash', description: 'Run a shell command',
     parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command'] } } };
   const fake = http.createServer(async (req, res) => {
@@ -755,6 +755,7 @@ test('a handed-over native action becomes the answer without a second model turn
     events.push(`${req.method} ${req.url}`);
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/session') return res.end('{"id":"ses_handoff"}');
+    if (req.url === '/permission' && ++polls === 1) return req.socket.destroy();
     if (req.url === '/permission') return res.end(JSON.stringify(waiting ? [{ id: 'per_bash', sessionID: 'ses_handoff',
       permission: 'external_directory', metadata: { command: 'ls /tmp' }, tool: { callID: 'native_bash' } }] : []));
     if (req.url === '/session/ses_handoff/message' && req.method === 'GET') return res.end(JSON.stringify([{ parts: [
@@ -769,6 +770,7 @@ test('a handed-over native action becomes the answer without a second model turn
     const result = await backend.complete(prepare({ model: models[0].id, messages: body.messages, tools: [bashTool] }, models));
     const call = result.choices[0].message.tool_calls[0];
     assert.equal(call.function.name, 'Bash');
+    assert.ok(polls >= 2, 'Permission polling recovers before handing off the blocked tool');
     assert.deepEqual(JSON.parse(call.function.arguments), { command: 'ls /tmp', description: 'list the directory' });
     assert.ok(events.includes('POST /session/ses_handoff/abort'), 'The generation is stopped once the action is handed over');
   } finally { backend.stopEvents(); fake.closeAllConnections(); fake.close(); }
@@ -1233,5 +1235,55 @@ test('native handoff and translation honor the current tool choice', async () =>
     };
     const translated = await backend.translate(request, 'action', {}, {}, {}, undefined);
     assert.equal(Boolean(translated), handed);
+  }
+});
+
+test('permission monitor recovers after transient query failures without aborting inference', async () => {
+  let polls = 0;
+  const logs = [];
+  const fake = http.createServer(async (req, res) => {
+    for await (const chunk of req) {}
+    if (req.url === '/session') return res.end('{"id":"ses_monitor"}');
+    if (req.url === '/permission') {
+      polls++;
+      if (polls === 1) return req.socket.destroy();
+      if (polls === 2) return res.end('{"unexpected":true}');
+      return res.end('[]');
+    }
+    if (req.url.endsWith('/message')) {
+      await new Promise(resolve => setTimeout(resolve, 650));
+      return res.end('{"info":{},"parts":[{"type":"text","text":"{\\"content\\":\\"OK\\",\\"calls\\":[]}"}]}');
+    }
+    res.end('true');
+  });
+  const backend = new Backend(await listen(fake), 'test', undefined, line => logs.push(line));
+  try {
+    const response = await backend.complete(prepare(body, models));
+    assert.equal(response.choices[0].message.content, 'OK');
+    assert.ok(polls >= 3);
+    assert.ok(logs.some(line => line.includes('ECONNRESET')));
+    assert.ok(logs.some(line => line.includes('non-array')));
+  } finally { fake.closeAllConnections(); fake.close(); }
+});
+
+test('unavailable permission polling preserves client cancellation and inference connection errors', async () => {
+  for (const cancel of [true, false]) {
+    const fake = http.createServer(async (req, res) => {
+      for await (const chunk of req) {}
+      if (req.url === '/session') return res.end('{"id":"ses_unavailable"}');
+      if (req.url === '/permission') { res.statusCode = 503; return res.end('{}'); }
+      if (req.url.endsWith('/message')) {
+        if (!cancel) setTimeout(() => req.socket.destroy(), 60);
+        return;
+      }
+      res.end('true');
+    });
+    const backend = new Backend(await listen(fake), 'test');
+    const controller = new AbortController();
+    const timer = cancel ? setTimeout(() => controller.abort(), 100) : null;
+    try {
+      await assert.rejects(backend.complete(prepare(body, models), controller.signal),
+        error => error.code === (cancel ? 'ABORT_ERR' : 'ECONNRESET'));
+    } finally { clearTimeout(timer); fake.closeAllConnections(); fake.close(); }
   }
 });

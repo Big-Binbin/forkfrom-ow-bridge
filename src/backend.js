@@ -147,8 +147,13 @@ export class Backend {
     return { failure: 'no event carried this call ID' };
   }
   async pendingPermissions(sessionID, signal) {
-    const pending = await this.request('/permission', 'GET', undefined, signal, 5000).catch(() => null);
-    if (!Array.isArray(pending)) return null;
+    let pending;
+    try { pending = await this.request('/permission', 'GET', undefined, signal, 5000); }
+    catch (error) {
+      if (!signal?.aborted) this.log(`Permission monitor query failed: ${error.code || error.name}${error.status ? ` (HTTP ${error.status})` : ''}`);
+      return null;
+    }
+    if (!Array.isArray(pending)) { this.log('Permission monitor query failed: non-array response'); return null; }
     return pending.filter(p => p.sessionID === sessionID);
   }
   // Refuse one native approval, or hand it to the external client. Returns { handoff } when
@@ -228,8 +233,9 @@ export class Backend {
           if (silentFor > this.silenceLimit) throw new BridgeError(`上游 ${Math.round(silentFor / 1000)} 秒没有任何输出，已中止；请切换模型或重试`, 504, 'upstream_silent');
         }
         const pending = await this.pendingPermissions(session.id, guardSignal);
-        if (pending === null) throw new BridgeError('Permission monitor unavailable', 502, 'permission_monitor_error');
-        for (const p of pending) {
+        // A failed poll does not grant approval: native actions remain waiting.
+        // Keep polling while inference runs; cancellation and inference errors still propagate.
+        for (const p of pending ?? []) {
           if (request.chatOnly) throw new BridgeError('Chat-only model attempted native tool use; execution blocked', 502, 'native_tool_activity');
           const result = await this.handlePermission(p, request, guardSignal, rejected, meta);
           if (result?.handoff) return result;
