@@ -1,4 +1,6 @@
-# 跨平台迁移（0.2.0）
+# 跨平台说明（0.2.2）
+
+> **仅 macOS（Apple Silicon）经过实际使用测试。Windows x64 / ARM64 与 Linux 均未正式测试，构建成功不等于实机可用。**
 
 ## 结构
 
@@ -39,7 +41,7 @@ npm run build:mac
 npm run build:win
 ```
 
-额外目标：`npm run build:win:arm64`；Linux 实验目标：`npm run build:linux`。产物输出到 `release/`。GitHub Actions 工作流提供 macOS 和 Windows 原生 runner 构建及测试，需在仓库实际运行后才能证明通过；本次没有触发远程 CI。
+额外目标：`npm run build:win:arm64`；Linux 实验目标：`npm run build:linux`。产物输出到 `release/`。GitHub Actions 工作流提供 macOS 和 Windows 原生 runner 构建及测试，需在仓库实际运行后才能证明通过。
 
 `macos/App.swift` 与 `scripts/build-mac.sh` 是迁移前的原生界面参考，不再作为 0.2.0 发布入口。
 

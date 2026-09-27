@@ -13,6 +13,10 @@ jobs:
             build: build:mac
           - os: windows-latest
             build: build:win
+          - os: windows-latest
+            build: build:win:arm64
+          - os: ubuntu-latest
+            build: build:linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +29,8 @@ jobs:
       - run: npm run ${{ matrix.build }}
       - uses: actions/upload-artifact@v4
         with:
-          name: ow-bridge-${{ matrix.os }}
+          name: ow-bridge-${{ matrix.os }}-${{ strategy.job-index }}
           path: |
             release/*.zip
             release/*.exe
+            release/*.AppImage

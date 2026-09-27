@@ -113,6 +113,44 @@ test('HTTP authenticates local clients, rejects origins, supports SSE and model 
   } finally { server.closeAllConnections(); server.close(); }
 });
 
+test('SSE starts on real upstream content while buffering the answer and tools', { timeout: 5000 }, async () => {
+  let activity, finish;
+  const events = [];
+  const pending = new Promise(resolve => { finish = resolve; });
+  const server = createServer({ key: 'test', getModels: () => models,
+    backend: { complete: async (request, signal, meta) => {
+      activity = meta.activity;
+      activity({ status: 'busy' });
+      return pending;
+    } }, onActivity: event => events.push(event), status: () => ({}) });
+  const base = await listen(server);
+  try {
+    const response = await fetch(base + '/v1/chat/completions', { method: 'POST',
+      headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, model: 'OC · Test', stream: true, stream_options: { include_usage: true } }) });
+    const reader = response.body.getReader();
+    const read = async () => new TextDecoder().decode((await reader.read()).value);
+    assert.equal(await read(), ': validating model response before emission\n\n', 'Busy alone does not signal model output');
+    activity({ status: 'receiving', content: true });
+    const first = JSON.parse((await read()).slice(6).trim());
+    assert.deepEqual(first.choices, [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]);
+    activity({ status: 'receiving', content: true });
+    const message = { role: 'assistant', content: 'Ready', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '{"path":"a"}' } }] };
+    finish(completion(body.model, message, { input: 10, output: 5 }));
+    let rest = '';
+    for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
+    const chunks = rest.split('\n\n').filter(x => x.startsWith('data: ') && !x.includes('[DONE]')).map(x => JSON.parse(x.slice(6)));
+    assert.ok(chunks.every(x => x.id === first.id && x.created === first.created && x.model === 'OC · Test'));
+    assert.ok(chunks.every(x => !x.choices[0]?.delta.role), 'The role chunk is emitted only once');
+    assert.equal(chunks[0].choices[0].delta.content, message.content);
+    assert.deepEqual(chunks[1].choices[0].delta.tool_calls, message.tool_calls.map((call, index) => ({ index, ...call })));
+    assert.equal(chunks[2].choices[0].finish_reason, 'tool_calls');
+    assert.equal(chunks[3].usage.total_tokens, 15);
+    assert.equal(rest.match(/\[DONE\]/g).length, 1);
+    assert.equal(events.length, 3, 'Existing activity reporting is preserved');
+  } finally { finish(completion(body.model, { role: 'assistant', content: '' })); server.closeAllConnections(); server.close(); }
+});
+
 test('a native approval without a call ID is refused by name and never approved', async () => {
   const events = []; const replies = []; let pending = false, held;
   const fake = http.createServer(async (req, res) => {

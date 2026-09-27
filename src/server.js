@@ -1,6 +1,6 @@
 import { clientModelID } from './model-status.js';
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { prepare, sendSSE, BridgeError } from './protocol.js';
 
 function authorized(req, key) {
@@ -27,7 +27,7 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
     const controller = new AbortController(); active.add(controller);
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-    let heartbeat, model, started, attempted = false, meta = {};
+    let heartbeat, model, started, streamStart, attempted = false, meta = {};
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
       if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: clientModelID(m), object: 'model', owned_by: 'opencode', name: clientModelID(m) })) });
@@ -49,6 +49,14 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         res.write(': validating model response before emission\n\n');
         heartbeat = setInterval(() => res.write(': waiting\n\n'), 10000);
+        meta.activity = progress => {
+          if (progress.content === true && !streamStart && !controller.signal.aborted && !res.destroyed && !res.writableEnded) {
+            streamStart = { id: `chatcmpl-${randomUUID()}`, created: Math.floor(Date.now() / 1000) };
+            res.write(`data: ${JSON.stringify({ ...streamStart, object: 'chat.completion.chunk', model: body.model,
+              choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] })}\n\n`);
+          }
+          onActivity?.(progress);
+        };
       }
       attempted = true;
       started = performance.now();
@@ -57,7 +65,10 @@ export function createServer({ key, backend, getModels, refresh, importModels, s
       if (controller.signal.aborted) return;
       await onResult(model, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'request', undefined, meta);
       result.model = body.model;
-      if (body.stream) sendSSE(res, result, body.stream_options?.include_usage);
+      if (body.stream) {
+        if (streamStart) Object.assign(result, streamStart);
+        sendSSE(res, result, body.stream_options?.include_usage, !!streamStart);
+      }
       else json(res, 200, result);
     } catch (e) {
       if (controller.signal.aborted) return;

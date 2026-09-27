@@ -149,11 +149,11 @@ export function completion(model, message, tokens) {
 
 // JSON envelopes must be validated before emitting executable tool calls.
 // SSE transport is supported, but output is deliberately buffered until validation.
-export function sendSSE(res, result, includeUsage = false) {
+export function sendSSE(res, result, includeUsage = false, roleSent = false) {
   const base = { id: result.id, object: 'chat.completion.chunk', created: result.created, model: result.model };
   const send = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
   const { message, finish_reason } = result.choices[0];
-  send({ role: 'assistant' });
+  if (!roleSent) send({ role: 'assistant' });
   if (message.content) send({ content: message.content });
   if (message.tool_calls) send({ tool_calls: message.tool_calls.map((t, index) => ({ index, ...t })) });
   send({}, finish_reason);

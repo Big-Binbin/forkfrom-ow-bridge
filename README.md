@@ -1,6 +1,14 @@
 # OW Bridge
 
-跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.1 使用 Electron 共用界面和现有 Node.js 代理核心。
+跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.2 使用 Electron 共用界面和现有 Node.js 代理核心。
+
+> **测试状态：仅 macOS（Apple Silicon）版经过实际使用测试。Windows（x64 / ARM64）和 Linux 版均未正式测试；安装包构建成功或自动化测试通过，不代表已完成实机验证或 WorkBuddy 联调。**
+
+## 界面预览
+
+![OW Bridge macOS 控制面板：免费模型、能力标签、响应耗时与导入按钮](docs/images/control-panel-macos.png)
+
+截图来自 macOS 实际运行界面；模型名单、免费额度和检测结果会随上游变化。
 
 ## 下载
 
@@ -8,15 +16,17 @@
 
 | 系统 | 安装包 |
 |---|---|
-| macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.1-mac-arm64.zip) |
-| Windows x64 | [Windows 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.1-win-x64.exe) |
+| macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-mac-arm64.zip) |
+| Windows x64（未正式测试） | [Windows 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-win-x64.exe) |
+| Windows ARM64（未正式测试） | [Windows ARM64 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-win-arm64.exe) |
+| Linux x64（实验性，未正式测试） | [Linux AppImage](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.2-linux-x64.AppImage) |
 
 请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。安装包尚未签名／公证，系统可能提示未知开发者；Windows 安装与联调尚待实机验收。免费模型及额度由上游决定。
 
 ## 使用
 
-- macOS：解压 `OW-Bridge-0.2.1-mac-arm64.zip`，双击 OW Bridge.app。
-- Windows x64：运行 `OW-Bridge-0.2.1-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
+- macOS：解压 `OW-Bridge-0.2.2-mac-arm64.zip`，双击 OW Bridge.app。
+- Windows x64：运行 `OW-Bridge-0.2.2-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
 - 首次启动自动准备 OpenCode、扫描免费模型、检测可用性；找到有效 WorkBuddy 配置后自动导入。
 - macOS 保持使用 `~/.workbuddy/models.json`。Windows 自动识别默认配置、已保存位置和 WorkBuddy 配置目录环境变量。找不到时点击“导入 WorkBuddy”选择已有的 `models.json`；首次使用请先在 WorkBuddy 保存一个自定义模型。Windows 托盘菜单“选择 WorkBuddy 配置…”可更换位置，切换时清理旧文件中的本应用条目。不会在猜测的位置新建模型配置。
 - 后续重新扫描或检测不会改 WorkBuddy；点击“导入 WorkBuddy”更新，界面会反馈结果。
@@ -58,7 +68,7 @@ Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为�
 
 格式不合格、坏调用项或输出截断会进入纠正与辅助转换流程。主模型每个请求最多三轮，检测不使用辅助转换；WorkBuddy 取消或断开请求时，代理停止 OpenCode 会话。主请求不会因等待时间或暂时没有内容事件而被代理自动中止。
 
-支持 Chat Completions 和 SSE；SSE 会等待完整回复校验后输出，不是逐 token 实时流。
+支持 Chat Completions 和 SSE；收到上游真实内容后，立即发送仅含 assistant 角色的起始块，供客户端切换响应状态。正文与工具参数仍在完整回复处理后输出，不是逐 token 实时流；不注入进度文字或思考过程，WorkBuddy 的实际状态文案仍需客户端联调确认。
 请求结果记录 `calls`、`nativeAttempts`、`steps`、`handoff`、`repaired` 作为"最近一次调用"的观测，但不参与能力判定（能力标签只由检测决定）。格式兜底只在失败时触发一次：把原模型响应、完整外部文本对话、真实工具描述与参数定义交给另一路模型转换。指导要求保留原动作、文件正文和命令，按客户端定义转换字段名；材料不足时返回 `{"unrepairable":true,"reason":"具体缺失项"}`。信封转换失败后，把具体诊断交回原模型作最后一次纠正；动作转换失败也在现有轮次内请求原模型补齐后重发。已有正常工具调用的参数错误仍交给 WorkBuddy 的工具反馈循环。检测过程从不兜底。转换材料不再截断字符串或嵌套对象，因此长对话会使用更多上下文，仍受辅助模型的上下文上限约束。被拦截的原生审批请求原文保存在 `status.json` 的 `lastPermission`，用于诊断模型为什么没有把动作交给 WorkBuddy。
 
 请求进行中会订阅 OpenCode 的 `GET /event` 事件流，把当前模型、已等待时长和上游重试次数实时写入 `status.json` 的 `activity`；控制面板服务行与托盘据此显示"等待上游 · 第 N 次重试"，不再出现整轮无输出。请求结束或取消时条目立即移除。事件流按需启动，断开后按 1 秒退避重连，运行时停止时一并关闭。
@@ -67,4 +77,4 @@ Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为�
 
 ## 验证
 
-`npm test` 覆盖协议校验、导入与退出清理、目录能力映射、图片转发、推理档位和系统代理解析。Windows 目标已构建，但 Windows 上的安装、代理读取和 WorkBuddy 联调仍需实机验证。产物未做商用发布签名/公证。
+`npm test` 覆盖协议校验、导入与退出清理、目录能力映射、图片转发、推理档位和系统代理解析。**除 macOS 外，Windows 与 Linux 均未正式测试**；安装、系统代理、托盘、退出清理和 WorkBuddy 联调仍需实机验证。产物未做商用发布签名/公证。
