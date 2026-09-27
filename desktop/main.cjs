@@ -5,7 +5,7 @@ const { createWriteStream } = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-app.setName('Buddy Bridge');
+app.setName('OW Bridge');
 app.setAppUserModelId('local.buddy.bridge');
 let window, tray, service, timer, log, quitting = false, mayQuit = false, actionBusy = false;
 let state = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} };
@@ -14,7 +14,7 @@ const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 
 function showWindow() {
   if (!window) {
-    window = new BrowserWindow({ width: 1040, height: 740, minWidth: 880, minHeight: 620, title: 'Buddy Bridge', backgroundColor: '#ffffff',
+    window = new BrowserWindow({ width: 1040, height: 740, minWidth: 880, minHeight: 620, title: 'OW Bridge', backgroundColor: '#ffffff',
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     window.setMenu(null);
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -42,7 +42,7 @@ function publish() {
   lastMenu = signature;
   const available = new Set(state.availableModels || []);
   const busy = actionBusy || state.probe?.running || state.phase !== 'ready';
-  tray.setToolTip('Buddy Bridge');
+  tray.setToolTip('OW Bridge');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: activityLabel(state), enabled: false },
     { label: '打开控制面板', click: showWindow }, { type: 'separator' },
@@ -51,7 +51,7 @@ function publish() {
     { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
     ...(process.platform === 'win32' ? [{ label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
     { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
-    { type: 'separator' }, { label: '退出 Buddy Bridge', click: () => app.quit() },
+    { type: 'separator' }, { label: '退出 OW Bridge', click: () => app.quit() },
   ]));
 }
 async function readState() {
@@ -93,8 +93,8 @@ async function action(name, value) {
 async function trayAction(name) {
   try {
     const result = await action(name);
-    if (['import', 'choose-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'Buddy Bridge', message: '导入完成', detail: importMessage(result) });
-  } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'Buddy Bridge', message: '操作失败', detail: e.message }); }
+    if (['import', 'choose-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: '导入完成', detail: importMessage(result) });
+  } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'OW Bridge', message: '操作失败', detail: e.message }); }
 }
 function importMessage(result) {
   return result.changed === false ? `WorkBuddy 配置已是最新，共 ${result.count} 个模型，无需重复写入。` : `已将 ${result.count} 个可用模型导入 WorkBuddy。`;
@@ -139,20 +139,20 @@ else {
   app.whenReady().then(async () => {
     const { dataDirectory } = await import('../src/platform.js');
     dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Buddy Bridge', submenu: [{ label: '退出 Buddy Bridge', role: 'quit' }] }, { label: '编辑', submenu: [{ label: '复制', role: 'copy' }, { label: '全选', role: 'selectAll' }] }]));
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'OW Bridge', submenu: [{ label: '退出 OW Bridge', role: 'quit' }] }, { label: '编辑', submenu: [{ label: '复制', role: 'copy' }, { label: '全选', role: 'selectAll' }] }]));
     app.setPath('userData', dataDir);
     ipcMain.handle('action', async (event, name, value) => {
       if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('拒绝未知来源');
       try {
         const result = await action(name, value);
         if (name === 'import' && !result.canceled) await dialog.showMessageBox(window, {
-          type: 'info', title: 'Buddy Bridge', message: result.changed === false ? '配置已是最新' : '导入完成',
+          type: 'info', title: 'OW Bridge', message: result.changed === false ? '配置已是最新' : '导入完成',
           detail: importMessage(result), buttons: ['确定'], defaultId: 0, cancelId: 0,
         });
         return { ok: true, result };
       } catch (error) {
         if (name === 'import') await dialog.showMessageBox(window, {
-          type: 'error', title: 'Buddy Bridge', message: '导入失败', detail: error.message, buttons: ['确定'], defaultId: 0, cancelId: 0,
+          type: 'error', title: 'OW Bridge', message: '导入失败', detail: error.message, buttons: ['确定'], defaultId: 0, cancelId: 0,
         });
         return { ok: false, error: error.message };
       }

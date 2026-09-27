@@ -1,22 +1,22 @@
-# Buddy Bridge
+# OW Bridge
 
-跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.0 使用 Electron 共用界面和现有 Node.js 代理核心。
+跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。0.2.1 使用 Electron 共用界面和现有 Node.js 代理核心。
 
 ## 下载
 
-[下载最新版本](https://github.com/louchi1984-coder/buddy-bridge/releases/latest)
+[下载最新版本](https://github.com/louchi1984-coder/ow-bridge/releases/latest)
 
 | 系统 | 安装包 |
 |---|---|
-| macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/buddy-bridge/releases/latest/download/Buddy-Bridge-0.2.0-mac-arm64.zip) |
-| Windows x64 | [Windows 安装程序](https://github.com/louchi1984-coder/buddy-bridge/releases/latest/download/Buddy-Bridge-0.2.0-win-x64.exe) |
+| macOS 13+，Apple Silicon（M 系列） | [Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.1-mac-arm64.zip) |
+| Windows x64 | [Windows 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/latest/download/OW-Bridge-0.2.1-win-x64.exe) |
 
 请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。安装包尚未签名／公证，系统可能提示未知开发者；Windows 安装与联调尚待实机验收。免费模型及额度由上游决定。
 
 ## 使用
 
-- macOS：解压 `Buddy-Bridge-0.2.0-mac-arm64.zip`，双击 Buddy Bridge.app。
-- Windows x64：运行 `Buddy-Bridge-0.2.0-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
+- macOS：解压 `OW-Bridge-0.2.1-mac-arm64.zip`，双击 OW Bridge.app。
+- Windows x64：运行 `OW-Bridge-0.2.1-win-x64.exe` 安装，再从桌面启动。Windows 包已构建，尚需实机验收。
 - 首次启动自动准备 OpenCode、扫描免费模型、检测可用性；找到有效 WorkBuddy 配置后自动导入。
 - macOS 保持使用 `~/.workbuddy/models.json`。Windows 自动识别默认配置、已保存位置和 WorkBuddy 配置目录环境变量。找不到时点击“导入 WorkBuddy”选择已有的 `models.json`；首次使用请先在 WorkBuddy 保存一个自定义模型。Windows 托盘菜单“选择 WorkBuddy 配置…”可更换位置，切换时清理旧文件中的本应用条目。不会在猜测的位置新建模型配置。
 - 后续重新扫描或检测不会改 WorkBuddy；点击“导入 WorkBuddy”更新，界面会反馈结果。

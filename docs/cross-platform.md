@@ -19,7 +19,7 @@
 | Windows | `%APPDATA%\Buddy Bridge` | `%USERPROFILE%\.workbuddy\models.json` |
 | Linux（实验性） | `$XDG_CONFIG_HOME/Buddy Bridge` 或 `~/.config/Buddy Bridge` | `~/.workbuddy/models.json` |
 
-Mac 沿用旧版数据目录，因此代理开关、运行时和本地 Key 可继续使用。自定义路径仍可通过 `BUDDY_DATA_DIR`、`BUDDY_MODELS_FILE` 指定。Windows WorkBuddy 路径与真实客户端读取行为仍需 Windows 实机确认。
+OW Bridge 沿用旧版数据目录和内部应用标识，因此代理开关、运行时和本地 Key 可继续使用。自定义路径仍可通过 `BUDDY_DATA_DIR`、`BUDDY_MODELS_FILE` 指定。Windows WorkBuddy 路径与真实客户端读取行为仍需 Windows 实机确认。
 
 ## 运行时安装与退出
 

@@ -20,7 +20,7 @@ await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
 const lockFile = path.join(dataDir, 'service.pid');
 try {
   const pid = Number(await fs.readFile(lockFile, 'utf8'));
-  try { process.kill(pid, 0); console.error('Buddy Bridge is already running'); process.exit(2); }
+  try { process.kill(pid, 0); console.error('OW Bridge is already running'); process.exit(2); }
   catch (e) { if (e.code !== 'ESRCH') throw e; }
   await fs.unlink(lockFile);
 } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -279,5 +279,5 @@ try {
   if (!agents.some(a => a.name === 'buddy-bridge')) throw new Error('Dedicated approval-gated agent missing');
   await refresh();
   startProbes(undefined, true, true);
-  console.log(`Buddy Bridge ready at ${endpoint}; ${models.length} free models`);
+  console.log(`OW Bridge ready at ${endpoint}; ${models.length} free models`);
 } catch (e) { update({ phase: 'error', message: e.message }); if (!server?.listening) await shutdown(1); }

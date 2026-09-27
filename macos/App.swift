@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         if peers.contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) { NSApp.terminate(nil); return }
         try? FileManager.default.createDirectory(at: dataURL, withIntermediateDirectories: true)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Buddy Bridge")
+        item.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "OW Bridge")
         launch()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshMenu() }
         refreshMenu()
@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
     @objc func showWindow() {
         if window == nil {
             let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 710), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            panel.title = "Buddy Bridge"
+            panel.title = "OW Bridge"
             panel.minSize = NSSize(width: 880, height: 620)
             panel.isReleasedWhenClosed = false
             panel.contentView = NSHostingView(rootView: Dashboard(app: self))
@@ -120,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         }
         let phase = status["phase"] as? String ?? "starting"
         item.button?.title = phase == "ready" ? "" : phase == "error" ? "!" : "·"
-        item.button?.toolTip = status["message"] as? String ?? "Buddy Bridge"
+        item.button?.toolTip = status["message"] as? String ?? "OW Bridge"
         let menu = NSMenu()
         let models = status["models"] as? [[String: Any]] ?? []
         let available = Set(status["availableModels"] as? [String] ?? [])
@@ -157,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, NSMe
         modelsItem.submenu = modelsMenu; menu.addItem(modelsItem)
         menu.addItem(.separator())
         menu.addItem(.separator())
-        add(menu, "退出 Buddy Bridge", #selector(quit))
+        add(menu, "退出 OW Bridge", #selector(quit))
         item.menu = menu
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -297,7 +297,7 @@ struct Dashboard: View {
             VStack(alignment: .leading, spacing: 24) {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 30, weight: .semibold)).foregroundColor(accent)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Buddy Bridge").font(.system(size: 20, weight: .semibold))
+                    Text("OW Bridge").font(.system(size: 20, weight: .semibold))
                     Text("让 WorkBuddy 连接 OpenCode").font(.caption).foregroundColor(.secondary)
                 }
                 Label("模型与服务", systemImage: "square.grid.2x2.fill").font(.headline).foregroundColor(accent)

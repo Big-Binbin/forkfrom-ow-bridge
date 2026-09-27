@@ -1,6 +1,6 @@
 {
-  "name": "buddy-bridge",
-  "version": "0.2.0",
+  "name": "ow-bridge",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -22,12 +22,12 @@
     "electron": "44.4.5",
     "electron-builder": "26.15.3"
   },
-  "description": "OpenCode free models for WorkBuddy",
-  "author": "Buddy Bridge",
+  "description": "OW Bridge — 让 WorkBuddy 使用 OpenCode 免费模型",
+  "author": "OW Bridge",
   "main": "desktop/main.cjs",
   "build": {
     "appId": "local.buddy.bridge",
-    "productName": "Buddy Bridge",
+    "productName": "OW Bridge",
     "directories": {
       "output": "release"
     },
@@ -37,7 +37,7 @@
       "package.json"
     ],
     "asar": false,
-    "artifactName": "Buddy-Bridge-${version}-${os}-${arch}.${ext}",
+    "artifactName": "OW-Bridge-${version}-${os}-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.utilities",
       "identity": null,

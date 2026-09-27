@@ -25,7 +25,7 @@ jobs:
       - run: npm run ${{ matrix.build }}
       - uses: actions/upload-artifact@v4
         with:
-          name: buddy-bridge-${{ matrix.os }}
+          name: ow-bridge-${{ matrix.os }}
           path: |
             release/*.zip
             release/*.exe

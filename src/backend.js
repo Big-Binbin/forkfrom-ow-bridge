@@ -212,7 +212,7 @@ export class Backend {
   async complete(request, signal, meta = {}) {
     meta.steps = 0; meta.nativeAttempts = 0; meta.permissions = [];
     // Native tools require approval; the bridge aborts any attempted native action.
-    const session = await this.request('/session', 'POST', { title: 'Buddy Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
+    const session = await this.request('/session', 'POST', { title: 'OW Bridge', permission: Object.entries(nativePermissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal);
     const route = `/session/${encodeURIComponent(session.id)}`;
     meta.sessionID = session.id;
     if (typeof meta.activity === 'function') { this.active.set(session.id, meta); this.watchEvents(); }

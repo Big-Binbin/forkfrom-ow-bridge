@@ -11,7 +11,7 @@ Prompt: “Reply only OK. Do not use any tools or read or change files.”
 | Normal `opencode run --agent plan`, existing local configuration | Returned `OK`, finish `stop`, cost 0 |
 | Same Plan command with only `OPENCODE_CONFIG_CONTENT={"permission":{"*":"deny"}}` | HTTP 403 `FreeTierError` |
 
-The model is usable in normal OpenCode. Failure in Buddy Bridge must not be
+The model is usable in normal OpenCode. Failure in OW Bridge must not be
 reported as general model unavailability. The restrictive inference-only
 configuration is a demonstrated difference; the exact server-side condition
 has not been established. Do not restore native tool execution merely to make
