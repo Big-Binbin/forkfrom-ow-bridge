@@ -269,7 +269,7 @@ process.on('unhandledRejection', e => { update({ phase: 'error', message: String
 try {
   update({ phase: 'starting' });
   await syncPublished([]);
-  binary = await findRuntime(dataDir, message => update({ message }));
+  binary = await findRuntime(dataDir, message => update({ message }), { log: message => log.write(`${new Date().toISOString()} ${message}\n`) });
   server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
     status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });

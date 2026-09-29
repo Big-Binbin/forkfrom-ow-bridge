@@ -13,11 +13,11 @@ test('configuration discovery respects explicit and remembered locations without
     assert.equal(await resolveModelsFile({ home, env: {} }), null);
     await assert.rejects(fs.stat(path.dirname(defaultFile)), { code: 'ENOENT' });
     await fs.mkdir(path.dirname(defaultFile));
-    await fs.writeFile(defaultFile, '[]');
+    await fs.writeFile(defaultFile, '\uFEFF[]');
     assert.equal(await resolveModelsFile({ home, env: {} }), defaultFile);
     const customDir = path.join(home, '自定义配置');
     const customFile = path.join(customDir, 'models.json');
-    await fs.mkdir(customDir); await fs.writeFile(customFile, '{"models":[]}');
+    await fs.mkdir(customDir); await fs.writeFile(customFile, '\uFEFF{"models":[]}');
     assert.equal(await resolveModelsFile({ home, env: { WORKBUDDY_CONFIG_DIR: customDir } }), customFile);
     assert.equal(await resolveModelsFile({ home, env: { WORKBUDDY_DATA_FOLDER_NAME: '自定义配置' } }), customFile);
     assert.equal(await resolveModelsFile({ home, env: {}, saved: customFile }), customFile);

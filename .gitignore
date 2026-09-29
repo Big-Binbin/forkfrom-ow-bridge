@@ -4,3 +4,5 @@ dist/
 .runtime/
 node_modules/
 release/
+.run/
+.scratch/

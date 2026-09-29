@@ -1,6 +1,6 @@
-# 跨平台说明（0.2.2）
+# 跨平台说明（0.2.3）
 
-> **仅 macOS（Apple Silicon）经过实际使用测试。Windows x64 / ARM64 与 Linux 均未正式测试，构建成功不等于实机可用。**
+> **Windows x64 portable 已经 Windows 实机验证；macOS（Apple Silicon）有实际使用验证。Windows ARM64 与 Linux 均未正式测试。下方旧版本记录保留历史验证边界，以最新发布记录为准。**
 
 ## 结构
 
@@ -21,11 +21,11 @@
 | Windows | `%APPDATA%\Buddy Bridge` | `%USERPROFILE%\.workbuddy\models.json` |
 | Linux（实验性） | `$XDG_CONFIG_HOME/Buddy Bridge` 或 `~/.config/Buddy Bridge` | `~/.workbuddy/models.json` |
 
-OW Bridge 沿用旧版数据目录和内部应用标识，因此代理开关、运行时和本地 Key 可继续使用。自定义路径仍可通过 `BUDDY_DATA_DIR`、`BUDDY_MODELS_FILE` 指定。Windows WorkBuddy 路径与真实客户端读取行为仍需 Windows 实机确认。
+OW Bridge 沿用旧版数据目录和内部应用标识，因此代理开关、运行时和本地 Key 可继续使用。自定义路径仍可通过 `BUDDY_DATA_DIR`、`BUDDY_MODELS_FILE` 指定。Windows x64 已有实机验证；其他架构和非默认配置路径仍需分别确认。
 
 ## 运行时安装与退出
 
-OpenCode 优先复用应用目录内已有的可用版本，或复制发现的本机版本；需要下载时从 npm 官方对应平台包的 `latest` 获取，不固定版本，也不在每次启动时强制升级。下载后校验 SHA-512，只提取指定二进制文件；Windows 使用 opencode.exe。解压采用 Node tar，不依赖系统 curl/tar。
+启动时发现本地可用 OpenCode，并查询 npm 官方对应平台包的 `latest`；本地版本不低于最新版本时复用，旧版本则更新。查询失败时可复用本地版本，下载新版本失败目前仍会报错。下载后校验 SHA-512，只提取指定二进制文件；Windows 使用 opencode.exe。解压采用 Node tar，不依赖系统 curl/tar。
 
 正常退出通过 IPC 请求后台清理本应用导入的 WorkBuddy 模型，再结束 OpenCode。后台与 Electron 失去 IPC 连接时也会执行清理。强杀或断电无法保证退出清理，下一次启动会清除旧的受管理配置。测试覆盖退出发生在检测中的场景。
 
@@ -45,7 +45,7 @@ npm run build:win
 
 `macos/App.swift` 与 `scripts/build-mac.sh` 是迁移前的原生界面参考，不再作为 0.2.0 发布入口。
 
-## 验证边界
+## 早期版本验证记录（历史）
 
 - 本机核心与平台单元/生命周期测试通过。
 - 本机完成 OpenCode 自动下载、校验、解压和版本验证。
@@ -62,3 +62,13 @@ Windows 验收：安装并双击启动 → 自动准备 OpenCode → 扫描和�
 macOS 本机 86 项自动化测试通过，Mac 发布包内代码与当前源码核对一致。README 展示本机实际运行截图。
 
 Windows CI 首次运行曾遇到状态文件原子替换的 `EPERM` 文件占用错误，导致生命周期测试超时。该偶发问题尚未修复，实机验收需重点检查状态刷新、导入和退出清理；重跑成功也不等于问题已经消失。所有非 macOS 版本仍标为未正式测试。
+
+## v0.2.3 Windows 修复与验证（2026-09-29）
+
+- Windows x64 portable 已由用户确认验证；Windows 工作区的 Codex 测试记录为 93 项通过、0 失败、0 跳过。
+- 实机交接记录：核心服务与 Electron GUI 启动，扫描模型、导入隔离配置，5 个模型通过本地 API 返回 HTTP 200。当前记录不等于所有 WorkBuddy 工作流均已逐项验收。
+- 文件替换遇到 EPERM/EACCES/EBUSY 时有限重试；不会因此保证长期占用也能成功。
+- 增加 Windows OpenCode 可执行文件发现，拒绝将 .cmd/.bat/.ps1 当作二进制，避免重写已有效的同版本运行时。
+- 旧 OpenCode 1.17.8 曾被上游以 HTTP 426 拒绝；启动查询官方 latest 并更新旧运行时。查询失败可用本地版本，但下载新版本失败尚不回退。
+- 兼容 BOM 配置，按五分钟时限清理残留同步锁；尚未校验持锁进程。
+- 本次发布 Windows x64 portable ZIP，不需要 NSIS 安装器。其他平台继续提供 v0.2.2 历史包，Windows ARM64/Linux 保留未正式测试标记。

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dataDirectory, runtimePackage } from '../src/platform.js';
 import { parseWindowsProxy } from '../src/system-proxy.js';
+import { runtimeCandidates } from '../src/runtime.js';
 
 test('platform paths preserve macOS data and locate Windows and Linux data', () => {
   assert.equal(dataDirectory('darwin', {}, '/Users/test'), '/Users/test/Library/Application Support/Buddy Bridge');
@@ -12,6 +13,17 @@ test('platform paths preserve macOS data and locate Windows and Linux data', () 
   assert.equal(runtimePackage('win32', 'arm64').name, 'opencode-windows-arm64');
   assert.equal(runtimePackage('darwin', 'arm64').binary, 'opencode');
   assert.throws(() => runtimePackage('win32', 'ia32'), /不支持/);
+});
+test('runtime discovery looks where each system installs OpenCode', () => {
+  const win = runtimePackage('win32', 'x64');
+  const found = runtimeCandidates(win, 'win32', { APPDATA: 'C:\\Users\\测试\\AppData\\Roaming' }, 'C:\\Users\\测试');
+  assert.deepEqual(found, ['C:\\Users\\测试\\.opencode\\bin\\opencode.exe',
+    'C:\\Users\\测试\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe']);
+  assert.equal(runtimeCandidates(win, 'win32', {}, 'C:\\Users\\Test')[1],
+    'C:\\Users\\Test\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe');
+  assert.equal(runtimeCandidates(win, 'win32', { BUDDY_OPENCODE_PATH: 'D:\\tools\\opencode.exe' }, 'C:\\Users\\Test')[0], 'D:\\tools\\opencode.exe');
+  assert.deepEqual(runtimeCandidates(runtimePackage('darwin', 'arm64'), 'darwin', {}, '/Users/test'),
+    ['/Users/test/.opencode/bin/opencode', '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode']);
 });
 test('Windows manual proxy accepts shared and per-protocol addresses', () => {
   const shared = parseWindowsProxy({ ProxyEnable: 1, ProxyServer: '127.0.0.1:7890' });

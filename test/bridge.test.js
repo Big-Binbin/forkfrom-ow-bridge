@@ -53,6 +53,10 @@ test('sync preserves unowned entries and object metadata, removes owned stale en
   const user = { id: 'personal', apiKey: 'private', url: 'existing' };
   const old = { models: [user, { id: 'opencode/old', buddyBridgeOwner: OWNER }], availableModels: ['personal', 'opencode/old'], other: true };
   await fs.writeFile(file, JSON.stringify(old));
+  const staleLock = `${file}.buddy-bridge.lock`;
+  await fs.writeFile(staleLock, 'stale');
+  const staleTime = new Date(Date.now() - 10 * 60 * 1000);
+  await fs.utimes(staleLock, staleTime, staleTime);
   try {
     const result = await syncModels(file, models, 'http://127.0.0.1:41980/v1/chat/completions', 'local-key');
     assert.equal(result.changed, true);

@@ -1,14 +1,19 @@
 import { workBuddyReasoning } from './reasoning.js';
 import { clientModelID } from './model-status.js';
+import { replaceWithRetry } from './atomic.js';
+import { parseJson } from './json.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const OWNER = 'buddy-bridge-v1';
+const LOCK_STALE_MS = 5 * 60 * 1000;
 export async function atomicWrite(file, text) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${randomUUID()}.tmp`;
-  try { await fs.writeFile(temp, text, { mode: 0o600, flag: 'wx' }); await fs.rename(temp, file); }
+  // WorkBuddy models, status.json and settings.json all land here, so a Windows sharing conflict
+  // must not turn a routine refresh into an import failure.
+  try { await fs.writeFile(temp, text, { mode: 0o600, flag: 'wx' }); await replaceWithRetry(temp, file); }
   finally { await fs.unlink(temp).catch(() => {}); }
 }
 
@@ -37,10 +42,14 @@ export function mergeModels(document, models, endpoint, key, { allowEmpty = fals
 
 export async function syncModels(file, models, endpoint, key, options = {}) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const lock = await fs.open(`${file}.buddy-bridge.lock`, 'wx', 0o600).catch(() => { throw new Error('Model sync already running; no changes made'); });
+  const lockFile = `${file}.buddy-bridge.lock`;
+  await fs.stat(lockFile).then(async stat => {
+    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) await fs.unlink(lockFile).catch(() => {});
+  }, () => {});
+  const lock = await fs.open(lockFile, 'wx', 0o600).catch(() => { throw new Error('Model sync already running; no changes made'); });
   try {
     const old = await fs.readFile(file, 'utf8').catch(e => { if (e.code === 'ENOENT' && !options.requireExisting) return null; throw e; });
-    const document = old === null ? [] : JSON.parse(old);
+    const document = old === null ? [] : parseJson(old);
     const merged = mergeModels(document, models, endpoint, key, options);
     const count = (Array.isArray(merged) ? merged : merged.models).filter(m => m.buddyBridgeOwner === OWNER).length;
     if (JSON.stringify(merged) === JSON.stringify(document)) return { changed: false, count };
@@ -53,5 +62,5 @@ export async function syncModels(file, models, endpoint, key, options = {}) {
     }
     await atomicWrite(file, JSON.stringify(merged, null, 2) + '\n');
     return { changed: true, count, backup };
-  } finally { await lock.close(); await fs.unlink(`${file}.buddy-bridge.lock`).catch(() => {}); }
+  } finally { await lock.close(); await fs.unlink(lockFile).catch(() => {}); }
 }

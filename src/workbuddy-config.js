@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
+import { parseJson } from './json.js';
 import path from 'node:path';
 import os from 'node:os';
 
 export async function validateModelsFile(file) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || path.basename(file).toLowerCase() !== 'models.json')
     throw new Error('请选择 WorkBuddy 的 models.json 配置文件');
-  const document = JSON.parse(await fs.readFile(file, 'utf8'));
+  const document = parseJson(await fs.readFile(file, 'utf8'));
   if (!Array.isArray(document) && !Array.isArray(document?.models))
     throw new Error('文件不是支持的 WorkBuddy 模型配置格式');
   return file;

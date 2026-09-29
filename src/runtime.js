@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { x as extract } from 'tar';
 import { runtimePackage } from './platform.js';
+import { replaceWithRetry } from './atomic.js';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
@@ -15,57 +16,110 @@ import { Backend, nativePermissions } from './backend.js';
 const exec = promisify(execFile);
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+function compareVersions(a, b) {
+  const left = a.split(/[+-]/, 1)[0].split('.').map(Number);
+  const right = b.split(/[+-]/, 1)[0].split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (left[i] !== right[i]) return left[i] - right[i];
+  }
+  return 0;
+}
+
+// Where an existing OpenCode installation is looked up. macOS installs it under ~/.opencode, and
+// so does Windows; a Windows user may also have installed it globally from npm, whose launcher is
+// a .cmd shim wrapping the real executable under the npm prefix.
+export function runtimeCandidates(pkg = runtimePackage(), platform = process.platform, env = process.env, home = os.homedir()) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const installed = platform === 'win32'
+    ? [p.join(home, '.opencode', 'bin', pkg.binary),
+       p.join(env.APPDATA || p.join(home, 'AppData', 'Roaming'), 'npm', 'node_modules', 'opencode-ai', 'bin', pkg.binary)]
+    : [p.join(home, '.opencode', 'bin', pkg.binary), '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode'];
+  return [env.BUDDY_OPENCODE_PATH, ...installed].filter(Boolean);
+}
+
 export async function findRuntime(dataDir, updateStatus, options = {}) {
   const pkg = runtimePackage();
   const root = path.join(dataDir, 'runtime');
-  const version = async file => (await exec(file, ['--version'], { timeout: 15000, windowsHide: true })).stdout.trim();
+  const log = options.log ?? (() => {});
+  const version = options.probe ?? (async file => (await exec(file, ['--version'], { timeout: 15000, windowsHide: true })).stdout.trim());
+  const readLatest = options.latest ?? (async () => {
+    updateStatus('Checking official OpenCode version');
+    const metaResponse = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, { signal: AbortSignal.timeout(30000) });
+    if (!metaResponse.ok) throw new Error(`OpenCode package metadata failed: HTTP ${metaResponse.status}`);
+    const metadata = await metaResponse.json();
+    const dist = metadata.dist;
+    if (metadata.name !== pkg.name || !VERSION.test(metadata.version ?? '') || !dist?.integrity?.startsWith('sha512-') || !dist?.tarball?.startsWith(`https://registry.npmjs.org/${pkg.name}/-/`)) throw new Error('Unexpected official OpenCode package metadata');
+    return metadata;
+  });
+  const installLatest = async metadata => {
+    const target = path.join(root, metadata.version, pkg.binary);
+    if (await version(target).then(found => found === metadata.version, () => false)) return target;
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    updateStatus(`Downloading OpenCode ${metadata.version}; first launch may take a few minutes`);
+    const archive = path.join(path.dirname(target), 'download.tgz');
+    const download = await fetch(metadata.dist.tarball, { signal: AbortSignal.timeout(180000) });
+    if (!download.ok || !download.body) throw new Error(`OpenCode download failed: HTTP ${download.status}`);
+    await pipeline(Readable.fromWeb(download.body), createWriteStream(archive));
+    const hash = createHash('sha512');
+    for await (const chunk of createReadStream(archive)) hash.update(chunk);
+    if (`sha512-${hash.digest('base64')}` !== metadata.dist.integrity) throw new Error('OpenCode download checksum mismatch');
+    const member = `package/bin/${pkg.binary}`;
+    const staging = await fs.mkdtemp(path.join(path.dirname(target), 'extract-'));
+    try {
+      await extract({ file: archive, cwd: staging, strip: 2, filter: (name, entry) => name === member && entry.type === 'File' });
+      await replaceWithRetry(path.join(staging, pkg.binary), target);
+    } finally { await fs.rm(staging, { recursive: true, force: true }); }
+    await fs.chmod(target, 0o755);
+    if (await version(target) !== metadata.version) throw new Error('Downloaded OpenCode version mismatch');
+    await fs.unlink(archive).catch(() => {});
+    return target;
+  };
+  const local = [];
   // Reuse managed installations, including directories created by the formerly pinned installer.
   const installed = (await fs.readdir(root, { withFileTypes: true }).catch(() => []))
     .filter(entry => entry.isDirectory() && VERSION.test(entry.name))
     .sort((a, b) => b.name.localeCompare(a.name, 'en', { numeric: true }));
   for (const entry of installed) {
     const file = path.join(root, entry.name, pkg.binary);
-    try { if (await version(file) === entry.name) return file; } catch {}
+    try { if (await version(file) === entry.name) local.push({ file, version: entry.name, source: 'managed runtime' }); } catch {}
   }
-  const candidates = options.candidates ?? [process.env.BUDDY_OPENCODE_PATH, path.join(os.homedir(), '.opencode', 'bin', pkg.binary), '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode'].filter(Boolean);
+  const candidates = options.candidates ?? runtimeCandidates(pkg);
+  const rejected = [];
   for (const file of candidates) {
+    // A launcher shim cannot become the runtime: Windows cannot execute a .cmd without a shell,
+    // and copying it in place of opencode.exe would install something that is not an executable.
+    if (/\.(?:cmd|bat|ps1)$/i.test(file)) { rejected.push(`${file}: launcher script cannot be used as the runtime binary`); continue; }
     try {
       const found = await version(file);
-      if (!VERSION.test(found)) continue;
+      if (!VERSION.test(found)) { rejected.push(`${file}: unrecognized version output (${found || 'empty'})`); continue; }
       const target = path.join(root, found, pkg.binary);
+      // Never rewrite a binary that already reports this version. Windows cannot replace a running
+      // image, so re-copying would fail for nothing whenever this runtime is already in use.
+      if (await version(target).then(found2 => found2 === found, () => false)) { local.push({ file: target, version: found, source: 'managed runtime' }); continue; }
       await fs.mkdir(path.dirname(target), { recursive: true });
-      updateStatus('正在准备独立 OpenCode 运行时');
-      await fs.copyFile(file, target + '.tmp'); await fs.chmod(target + '.tmp', 0o755);
-      await fs.rename(target + '.tmp', target); return target;
-    } catch {}
+      updateStatus('Preparing isolated OpenCode runtime');
+      const temp = target + '.tmp';
+      try { await fs.copyFile(file, temp); await fs.chmod(temp, 0o755); await replaceWithRetry(temp, target); }
+      finally { await fs.unlink(temp).catch(() => {}); }
+      local.push({ file: target, version: found, source: file });
+    } catch (e) { rejected.push(`${file}: ${e.code || e.message}`); }
   }
-  updateStatus('正在获取 OpenCode 官方当前版本');
-  const packageName = pkg.name;
-  const metaResponse = await fetch(`https://registry.npmjs.org/${packageName}/latest`, { signal: AbortSignal.timeout(30000) });
-  if (!metaResponse.ok) throw new Error(`OpenCode 安装信息读取失败：HTTP ${metaResponse.status}`);
-  const metadata = await metaResponse.json();
-  const dist = metadata.dist;
-  if (metadata.name !== packageName || !VERSION.test(metadata.version ?? '') || !dist?.integrity?.startsWith('sha512-') || !dist?.tarball?.startsWith(`https://registry.npmjs.org/${packageName}/-/`)) throw new Error('Unexpected official OpenCode package metadata');
-  const target = path.join(root, metadata.version, pkg.binary);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  updateStatus(`正在下载 OpenCode ${metadata.version}，首次启动可能需要几分钟`);
-  const archive = path.join(path.dirname(target), 'download.tgz');
-  const download = await fetch(dist.tarball, { signal: AbortSignal.timeout(180000) });
-  if (!download.ok || !download.body) throw new Error(`OpenCode 下载失败：HTTP ${download.status}`);
-  await pipeline(Readable.fromWeb(download.body), createWriteStream(archive));
-  const hash = createHash('sha512');
-  for await (const chunk of createReadStream(archive)) hash.update(chunk);
-  if (`sha512-${hash.digest('base64')}` !== dist.integrity) throw new Error('OpenCode download checksum mismatch');
-  const member = `package/bin/${pkg.binary}`;
-  const staging = await fs.mkdtemp(path.join(path.dirname(target), 'extract-'));
-  try {
-    await extract({ file: archive, cwd: staging, strip: 2, filter: (name, entry) => name === member && entry.type === 'File' });
-    await fs.rename(path.join(staging, pkg.binary), target);
-  } finally { await fs.rm(staging, { recursive: true, force: true }); }
-  await fs.chmod(target, 0o755);
-  if (await version(target) !== metadata.version) throw new Error('Downloaded OpenCode version mismatch');
-  await fs.unlink(archive);
-  return target;
+  local.sort((a, b) => compareVersions(b.version, a.version));
+  const best = local[0];
+  let metadata;
+  try { metadata = await readLatest(); }
+  catch (e) {
+    if (best) { log(`Could not check official OpenCode latest (${e.message}); using local ${best.version}: ${best.file}`); return best.file; }
+    if (rejected.length) log(`Local OpenCode candidates were rejected (${rejected.join('; ')})`);
+    throw e;
+  }
+  if (best && compareVersions(best.version, metadata.version) >= 0) {
+    log(`Using ${best.source} OpenCode ${best.version}: ${best.file}`);
+    return best.file;
+  }
+  if (best) log(`Local OpenCode ${best.version} is older than official ${metadata.version}; downloading official runtime`);
+  else log(rejected.length ? `Local OpenCode candidates were rejected (${rejected.join('; ')}); downloading official runtime` : 'No local OpenCode runtime found; downloading official runtime');
+  return await installLatest(metadata);
 }
 
 export const isolatedConfig = {
