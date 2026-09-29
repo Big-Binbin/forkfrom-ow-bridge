@@ -80,3 +80,5 @@ Windows CI 首次运行曾遇到状态文件原子替换的 `EPERM` 文件占用
 改为 electron-builder 的 `identity: "-"`，使用 ad-hoc 签名处理应用与嵌套组件；未启用 hardened runtime 和公证，不需要 Apple 证书。Mac 构建命令现在会解压最终 ZIP 并执行 `codesign --verify --deep --strict`，失败则构建命令失败。临时签名不代表 Gatekeeper 信任，下载后的首次打开办法见 README。
 
 本次只发布 Mac ARM64 v0.2.4 包；Windows x64 继续推荐已验证的 v0.2.3 portable，Windows ARM64/Linux 仍未正式测试。
+
+本次验证：93 项自动测试通过；最终 ZIP 解压后的深度严格签名校验通过；签名后的 Electron 44.4.5 ARM64 运行时启动通过。Gatekeeper 评估仍为 rejected（未公证），未声称通过下载隔离环境的默认放行，也未重新执行完整 WorkBuddy 工作流。
