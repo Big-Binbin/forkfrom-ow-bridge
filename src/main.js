@@ -36,7 +36,7 @@ const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], server, runtime, binary, stopping = false, refreshing;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
-let state = { useSystemProxy: settings.useSystemProxy === true, phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
+let state = { useSystemProxy: settings.useSystemProxy === true || (process.platform === 'win32' && settings.useSystemProxy !== false), phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false } };
 // Serialize status writes so an older async update cannot overwrite a newer state.
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -269,12 +269,25 @@ process.on('unhandledRejection', e => { update({ phase: 'error', message: String
 try {
   update({ phase: 'starting' });
   await syncPublished([]);
-  binary = await findRuntime(dataDir, message => update({ message }), { log: message => log.write(`${new Date().toISOString()} ${message}\n`) });
+  let startupProxyEnv;
+  try { startupProxyEnv = await systemProxyEnvironment(state.useSystemProxy); }
+  catch (error) {
+    // A fresh install prefers the system proxy when one exists, but a machine without a manual
+    // proxy must still be able to download directly. An explicitly saved "on" setting remains strict.
+    if (settings.useSystemProxy === true) throw error;
+    startupProxyEnv = await systemProxyEnvironment(false);
+    update({ useSystemProxy: false });
+    log.write(`${new Date().toISOString()} 未检测到可用的系统代理，首次下载改为直连：${error.message}\n`);
+  }
+  binary = await findRuntime(dataDir, message => update({ message }), {
+    proxyEnv: startupProxyEnv,
+    log: message => log.write(`${new Date().toISOString()} ${message}\n`),
+  });
   server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
     status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });
-  runtime = attachTranslator(await startBackend(binary, dataDir, log, await systemProxyEnvironment(state.useSystemProxy)));
+  runtime = attachTranslator(await startBackend(binary, dataDir, log, startupProxyEnv));
   watchRuntime(runtime);
   // Confirm this runtime has the dedicated agent, not a user's build agent.
   const agents = await runtime.backend.request('/agent');

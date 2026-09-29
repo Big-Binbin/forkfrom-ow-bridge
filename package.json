@@ -1,6 +1,6 @@
 {
   "name": "ow-bridge",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,7 +16,8 @@
     "build:linux": "electron-builder --linux AppImage --x64 --publish never"
   },
   "dependencies": {
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "undici": "^7.30.0"
   },
   "devDependencies": {
     "electron": "44.4.5",

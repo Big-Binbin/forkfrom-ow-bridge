@@ -12,9 +12,11 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 import { Backend, nativePermissions } from './backend.js';
+import { ProxyAgent } from 'undici';
 
 const exec = promisify(execFile);
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const REGISTRIES = ['https://registry.npmjs.org', 'https://registry.npmmirror.com'];
 
 function compareVersions(a, b) {
   const left = a.split(/[+-]/, 1)[0].split('.').map(Number);
@@ -42,27 +44,65 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
   const root = path.join(dataDir, 'runtime');
   const log = options.log ?? (() => {});
   const version = options.probe ?? (async file => (await exec(file, ['--version'], { timeout: 15000, windowsHide: true })).stdout.trim());
+  const request = options.fetch ?? globalThis.fetch;
+  const registries = options.registries ?? REGISTRIES;
+  const proxy = options.proxyEnv?.HTTPS_PROXY || options.proxyEnv?.https_proxy;
+  const dispatcher = proxy ? new ProxyAgent(proxy) : undefined;
+  const requestOptions = timeout => ({ signal: AbortSignal.timeout(timeout), ...(dispatcher ? { dispatcher } : {}) });
+  const validMetadata = metadata => {
+    const dist = metadata?.dist;
+    let tarball;
+    try { tarball = new URL(dist?.tarball); } catch { return false; }
+    return metadata.name === pkg.name && VERSION.test(metadata.version ?? '') &&
+      dist?.integrity?.startsWith('sha512-') &&
+      registries.some(registry => tarball.origin === registry && tarball.pathname.startsWith(`/${pkg.name}/-/`));
+  };
   const readLatest = options.latest ?? (async () => {
-    updateStatus('Checking official OpenCode version');
-    const metaResponse = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, { signal: AbortSignal.timeout(30000) });
-    if (!metaResponse.ok) throw new Error(`OpenCode package metadata failed: HTTP ${metaResponse.status}`);
-    const metadata = await metaResponse.json();
-    const dist = metadata.dist;
-    if (metadata.name !== pkg.name || !VERSION.test(metadata.version ?? '') || !dist?.integrity?.startsWith('sha512-') || !dist?.tarball?.startsWith(`https://registry.npmjs.org/${pkg.name}/-/`)) throw new Error('Unexpected official OpenCode package metadata');
-    return metadata;
+    const failures = [];
+    for (const registry of registries) {
+      updateStatus(`正在从 ${new URL(registry).hostname} 获取 OpenCode 版本信息`);
+      try {
+        const response = await request(`${registry}/${pkg.name}/latest`, requestOptions(30000));
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const metadata = await response.json();
+        if (!validMetadata(metadata)) throw new Error('返回的安装信息不可信');
+        if (registry !== registries[0]) log(`OpenCode 官方源不可用，已切换到 ${registry}`);
+        return metadata;
+      } catch (error) { failures.push(`${new URL(registry).hostname}: ${error.message}`); }
+    }
+    throw new Error(`无法获取 OpenCode 版本信息，官方源和国内镜像均失败（${failures.join('；')}）`);
   });
   const installLatest = async metadata => {
     const target = path.join(root, metadata.version, pkg.binary);
     if (await version(target).then(found => found === metadata.version, () => false)) return target;
     await fs.mkdir(path.dirname(target), { recursive: true });
-    updateStatus(`Downloading OpenCode ${metadata.version}; first launch may take a few minutes`);
     const archive = path.join(path.dirname(target), 'download.tgz');
-    const download = await fetch(metadata.dist.tarball, { signal: AbortSignal.timeout(180000) });
-    if (!download.ok || !download.body) throw new Error(`OpenCode download failed: HTTP ${download.status}`);
-    await pipeline(Readable.fromWeb(download.body), createWriteStream(archive));
-    const hash = createHash('sha512');
-    for await (const chunk of createReadStream(archive)) hash.update(chunk);
-    if (`sha512-${hash.digest('base64')}` !== metadata.dist.integrity) throw new Error('OpenCode download checksum mismatch');
+    const tarballs = [...new Set([metadata.dist.tarball,
+      ...registries.map(registry => `${registry}/${pkg.name}/-/${pkg.name}-${metadata.version}.tgz`)])];
+    const failures = [];
+    let downloaded = false, checksumFailed = false;
+    for (const tarball of tarballs) {
+      updateStatus(`正在从 ${new URL(tarball).hostname} 下载 OpenCode ${metadata.version}，首次启动可能需要几分钟`);
+      try {
+        const response = await request(tarball, requestOptions(180000));
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
+        const hash = createHash('sha512');
+        for await (const chunk of createReadStream(archive)) hash.update(chunk);
+        if (`sha512-${hash.digest('base64')}` !== metadata.dist.integrity) {
+          checksumFailed = true;
+          throw new Error('完整性校验失败');
+        }
+        if (tarball !== metadata.dist.tarball) log(`OpenCode 下载已切换到 ${new URL(tarball).origin}`);
+        downloaded = true;
+        break;
+      } catch (error) { failures.push(`${new URL(tarball).hostname}: ${error.message}`); }
+    }
+    if (!downloaded) {
+      await fs.unlink(archive).catch(() => {});
+      if (checksumFailed) throw new Error('OpenCode download checksum mismatch');
+      throw new Error(`OpenCode 下载失败，官方源和国内镜像均不可用（${failures.join('；')}）`);
+    }
     const member = `package/bin/${pkg.binary}`;
     const staging = await fs.mkdtemp(path.join(path.dirname(target), 'extract-'));
     try {

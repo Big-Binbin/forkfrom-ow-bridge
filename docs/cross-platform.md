@@ -1,4 +1,4 @@
-# 跨平台说明（0.2.4）
+# 跨平台说明（0.2.5）
 
 > **Windows x64 portable 已经 Windows 实机验证；macOS（Apple Silicon）有实际使用验证。Windows ARM64 与 Linux 均未正式测试。下方旧版本记录保留历史验证边界，以最新发布记录为准。**
 
@@ -82,3 +82,11 @@ Windows CI 首次运行曾遇到状态文件原子替换的 `EPERM` 文件占用
 本次只发布 Mac ARM64 v0.2.4 包；Windows x64 继续推荐已验证的 v0.2.3 portable，Windows ARM64/Linux 仍未正式测试。
 
 本次验证：93 项自动测试通过；最终 ZIP 解压后的深度严格签名校验通过；签名后的 Electron 44.4.5 ARM64 运行时启动通过。Gatekeeper 评估仍为 rejected（未公证），未声称通过下载隔离环境的默认放行，也未重新执行完整 WorkBuddy 工作流。
+
+## v0.2.5 Windows 首次下载（2026-09-29）
+
+同步 Windows Codex 的 runtime/main 修改和 undici 依赖：版本查询与下载使用系统代理，官方 npm 失败时尝试 npmmirror。首次默认自动读取代理仅对 Windows 开启；没有可用配置时直连，已明确保存的开关优先，Mac 默认行为不变。启动时读取一次的代理配置也交给 OpenCode。
+
+保留 SHA-512 和版本校验；官方元数据可用时，镜像 tarball 必须匹配官方校验值。若元数据本身来自第三方镜像，则信任该镜像提供的校验值。未加入“代理失效后绕过代理直连”策略，未修复任务栏图标。仅 PAC/SOCKS 仍不支持。
+
+原 Windows 修改记录为 94 项测试通过；补充官方元数据成功、tarball 转镜像，以及镜像字节不匹配拒绝安装的测试。v0.2.5 发布 Windows x64 portable，Mac 保留已修复签名的 v0.2.4，Windows ARM64/Linux 仍未正式测试。
