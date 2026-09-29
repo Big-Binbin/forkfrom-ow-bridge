@@ -1,4 +1,4 @@
-# 跨平台说明（0.2.3）
+# 跨平台说明（0.2.4）
 
 > **Windows x64 portable 已经 Windows 实机验证；macOS（Apple Silicon）有实际使用验证。Windows ARM64 与 Linux 均未正式测试。下方旧版本记录保留历史验证边界，以最新发布记录为准。**
 
@@ -72,3 +72,11 @@ Windows CI 首次运行曾遇到状态文件原子替换的 `EPERM` 文件占用
 - 旧 OpenCode 1.17.8 曾被上游以 HTTP 426 拒绝；启动查询官方 latest 并更新旧运行时。查询失败可用本地版本，但下载新版本失败尚不回退。
 - 兼容 BOM 配置，按五分钟时限清理残留同步锁；尚未校验持锁进程。
 - 本次发布 Windows x64 portable ZIP，不需要 NSIS 安装器。其他平台继续提供 v0.2.2 历史包，Windows ARM64/Linux 保留未正式测试标记。
+
+## v0.2.4 Mac 签名修复（2026-09-29）
+
+旧 v0.2.2 Mac ZIP 与 GitHub 哈希一致，但 codesign 深度校验报错 `code has no resources but signature indicates they must be present`。旧配置 `identity: null` 跳过应用签名，留下 Electron 可执行文件的 linker 临时签名。
+
+改为 electron-builder 的 `identity: "-"`，使用 ad-hoc 签名处理应用与嵌套组件；未启用 hardened runtime 和公证，不需要 Apple 证书。Mac 构建命令现在会解压最终 ZIP 并执行 `codesign --verify --deep --strict`，失败则构建命令失败。临时签名不代表 Gatekeeper 信任，下载后的首次打开办法见 README。
+
+本次只发布 Mac ARM64 v0.2.4 包；Windows x64 继续推荐已验证的 v0.2.3 portable，Windows ARM64/Linux 仍未正式测试。

@@ -1,6 +1,6 @@
 {
   "name": "ow-bridge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/main.js",
     "test": "node --test test/*.test.js",
-    "build:mac": "electron-builder --mac zip --arm64 --publish never",
+    "build:mac": "electron-builder --mac zip --arm64 --publish never && node scripts/verify-mac.mjs",
     "desktop": "electron .",
     "build:win": "electron-builder --win nsis --x64 --publish never",
     "build:win:arm64": "electron-builder --win nsis --arm64 --publish never",
@@ -40,8 +40,10 @@
     "artifactName": "OW-Bridge-${version}-${os}-${arch}.${ext}",
     "mac": {
       "category": "public.app-category.utilities",
-      "identity": null,
-      "minimumSystemVersion": "13.0"
+      "identity": "-",
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": false,
+      "notarize": false
     },
     "win": {
       "target": "nsis",

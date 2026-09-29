@@ -17,15 +17,15 @@
 | 系统 | 验证状态 | 下载 |
 |---|---|---|
 | **Windows x64** | **已验证 · 推荐免安装版** | [v0.2.3 Portable ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/download/v0.2.3/OW-Bridge-0.2.3-win-x64-portable.zip) |
-| macOS 13+，Apple Silicon（M 系列） | 已实际使用验证，保留现有稳定包 | [v0.2.2 Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/download/v0.2.2/OW-Bridge-0.2.2-mac-arm64.zip) |
+| macOS 13+，Apple Silicon（M 系列） | 已实际使用验证，v0.2.4 修复签名完整性 | [v0.2.4 Mac ARM64 ZIP](https://github.com/louchi1984-coder/ow-bridge/releases/download/v0.2.4/OW-Bridge-0.2.4-mac-arm64.zip) |
 | Windows ARM64 | 未正式测试，旧版 | [v0.2.2 ARM64 安装程序](https://github.com/louchi1984-coder/ow-bridge/releases/download/v0.2.2/OW-Bridge-0.2.2-win-arm64.exe) |
 | Linux x64 | 实验性，未正式测试，旧版 | [v0.2.2 AppImage](https://github.com/louchi1984-coder/ow-bridge/releases/download/v0.2.2/OW-Bridge-0.2.2-linux-x86_64.AppImage) |
 
-请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。安装包尚未签名／公证，系统可能提示未知开发者；Windows x64 本次提供免安装 ZIP；NSIS 安装器未更新。免费模型及额度由上游决定。
+请先安装 WorkBuddy。无需另装 Node.js 或 npm，应用按需从官方 npm 下载 OpenCode。Mac 使用临时签名，未做 Apple 公证；Windows 未做发布者签名，系统可能提示未知开发者。Windows x64 提供免安装 ZIP；NSIS 安装器未更新。免费模型及额度由上游决定。
 
 ## 使用
 
-- macOS：解压 `OW-Bridge-0.2.2-mac-arm64.zip`，双击 OW Bridge.app。
+- macOS：解压 `OW-Bridge-0.2.4-mac-arm64.zip`，双击 OW Bridge.app。
 - **Windows x64：完整解压 `OW-Bridge-0.2.3-win-x64-portable.zip`，双击文件夹里的 `OW Bridge.exe`。无需安装；不要只复制 exe，必须保留旁边的 `resources`、DLL 等文件。**
 - 首次启动自动准备 OpenCode、扫描免费模型、检测可用性；找到有效 WorkBuddy 配置后自动导入。
 - macOS 保持使用 `~/.workbuddy/models.json`。Windows 自动识别默认配置、已保存位置和 WorkBuddy 配置目录环境变量。找不到时点击“导入 WorkBuddy”选择已有的 `models.json`；首次使用请先在 WorkBuddy 保存一个自定义模型。Windows 托盘菜单“选择 WorkBuddy 配置…”可更换位置，切换时清理旧文件中的本应用条目。不会在猜测的位置新建模型配置。
@@ -35,6 +35,18 @@
 - 系统代理开关支持 Mac 和 Windows 的手动 HTTP/HTTPS 代理。
 
 使用问题在抖音/视频号 @娄老师说的对
+
+## Mac 首次打开提示
+
+v0.2.4 已修复旧包签名不完整的问题，使用 **ad-hoc 临时签名**，未做 Apple Developer ID 签名或公证，仍可能被 macOS 拦截。请下载新版 ZIP，解压后将 `OW Bridge.app` 拖入“应用程序”。
+
+先尝试打开，再到“系统设置 → 隐私与安全性”点击“仍要打开”。如果仍提示“已损坏”，请确认文件来自本仓库 Release，且 ZIP 的 SHA-256 与该版本 `SHA256SUMS` 一致；确认信任此应用后，可在终端仅移除此应用的下载隔离标记：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/OW Bridge.app"
+```
+
+之后重新打开。此操作不会关闭系统整体的 Gatekeeper；它跳过此应用的下载隔离检查，不是 Apple 公证。请勿对来源不明或哈希不符的应用执行。目前 Mac 包仅支持 Apple Silicon（M 系列），要求 macOS 13 或更新版本。
 
 ## 开发与打包
 
