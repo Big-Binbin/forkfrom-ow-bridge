@@ -61,11 +61,11 @@ function renderDetails() {
   add('最近更新：' + (r.time ? new Date(r.time).toLocaleString() : '尚未检测'));
 }
 function render() {
-  const busy = pendingAction || state.actionBusy || state.probe?.running || state.phase !== 'ready';
+  const busy = pendingAction || state.actionBusy || state.configSearch?.running || state.probe?.running || state.phase !== 'ready';
   for (const id of ['refresh', 'probe', 'import', 'proxy']) $(id).disabled = !!busy;
   $('restart').hidden = state.phase !== 'error';
   $('restart').disabled = !!(pendingAction || state.actionBusy);
-  $('proxy').disabled = !!(pendingAction || state.actionBusy || state.probe?.running || !['ready', 'error'].includes(state.phase));
+  $('proxy').disabled = !!(pendingAction || state.actionBusy || state.configSearch?.running || state.probe?.running || !['ready', 'error'].includes(state.phase));
   $('proxy').checked = state.useSystemProxy === true;
   $('service-text').textContent = window.OWActivity.activityText(state.activity?.[0]) || state.message || '正在启动隔离模型服务';
   $('service-dot').className = 'dot' + (state.phase === 'error' ? ' error' : '');
@@ -77,7 +77,7 @@ function render() {
     $(id).append(document.createTextNode(active ? id === 'import' ? '正在导入…' : id === 'refresh' ? '正在读取…' : '正在检测…' : title));
   }
   const sync = state.sync;
-  $('sync').textContent = sync?.error || (sync?.time ? `已导入 ${sync.count ?? 0} 个模型 · 再次检测后需点击导入 WorkBuddy 更新` : '首次读取和检测完成后自动导入 WorkBuddy');
+  $('sync').textContent = (state.configSearch?.running ? 'OpenCode 正在只读查找 WorkBuddy 配置…' : state.configSearch?.candidates?.length > 1 && !state.modelsFile ? '找到多个配置文件，请点击导入 WorkBuddy 选择。' : '') || sync?.error || (sync?.time ? `已导入 ${sync.count ?? 0} 个模型 · 再次检测后需点击导入 WorkBuddy 更新` : '首次读取和检测完成后自动导入 WorkBuddy');
   renderModels(); renderDetails();
 }
 async function run(name, value) {

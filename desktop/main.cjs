@@ -40,7 +40,7 @@ function publish() {
   if (signature === lastMenu) return;
   lastMenu = signature;
   const available = new Set(state.availableModels || []);
-  const busy = actionBusy || state.probe?.running || state.phase !== 'ready';
+  const busy = actionBusy || state.configSearch?.running || state.probe?.running || state.phase !== 'ready';
   tray.setToolTip('OW Bridge');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: activityLabel(state), enabled: false },
@@ -48,7 +48,7 @@ function publish() {
     { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
     { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
-    ...(process.platform === 'win32' ? [{ label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
+    ...(process.platform === 'win32' ? [{ label: '自动查找 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('find-config') }, { label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
     { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
     { type: 'separator' }, { label: '退出 OW Bridge', click: () => app.quit() },
   ]));
@@ -60,7 +60,8 @@ async function readState() {
   } catch {}
 }
 async function action(name, value) {
-  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart', 'choose-config'].includes(name)) throw new Error('未知操作');
+  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart', 'choose-config', 'find-config'].includes(name)) throw new Error('未知操作');
+  if (state.configSearch?.running) throw new Error('请等待配置查找完成');
   if (actionBusy) throw new Error('请等待当前操作完成');
   if (name === 'restart') {
     actionBusy = name; publish();
@@ -72,7 +73,29 @@ async function action(name, value) {
   actionBusy = name; publish();
   try {
     let modelsFile;
-    if (process.platform === 'win32' && (name === 'choose-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
+    if (process.platform === 'win32' && (name === 'find-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
+      let found = state.configSearch;
+      if (name === 'find-config' || !found?.candidates?.length) {
+        const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
+        const response = await fetch(`http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}/admin/find-config`, {
+          method: 'POST', headers: { Authorization: `Bearer ${key}` } });
+        found = await response.json();
+        if (!response.ok) throw new Error(found.error?.message || '自动查找失败');
+      }
+      const candidates = found.candidates || [];
+      if (candidates.length) {
+        const choice = await dialog.showMessageBox({ type: 'question', title: '选择 WorkBuddy 配置',
+          message: '请选择 WorkBuddy 当前使用的配置文件', detail: candidates.map((p, i) => `${i + 1}. ${p}`).join('\n'),
+          buttons: [...candidates.map((_, i) => `使用 ${i + 1}`), '手动选择', '取消'], cancelId: candidates.length + 1 });
+        if (choice.response === candidates.length + 1) return { canceled: true };
+        modelsFile = candidates[choice.response];
+      } else {
+        await dialog.showMessageBox({ type: 'info', message: found.errors?.length ? '自动查找未完成，请手动选择' : '自动查找未找到配置，请手动选择',
+          detail: found.errors?.join('\n') || '请先在 WorkBuddy 保存一个自定义模型，再重试。' });
+      }
+      name = modelsFile ? 'import' : 'choose-config';
+    }
+    if (process.platform === 'win32' && name === 'choose-config') {
       const selection = await dialog.showOpenDialog({ title: '选择 WorkBuddy 的 models.json', message: '请选择 WorkBuddy 实际使用的配置文件。首次使用请先在 WorkBuddy 保存一个自定义模型。', properties: ['openFile'], filters: [{ name: 'JSON 配置', extensions: ['json'] }] });
       if (selection.canceled || !selection.filePaths.length) return { canceled: true };
       modelsFile = selection.filePaths[0];
@@ -92,7 +115,7 @@ async function action(name, value) {
 async function trayAction(name) {
   try {
     const result = await action(name);
-    if (['import', 'choose-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: '导入完成', detail: importMessage(result) });
+    if (['import', 'choose-config', 'find-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: '导入完成', detail: importMessage(result) });
   } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'OW Bridge', message: '操作失败', detail: e.message }); }
 }
 function importMessage(result) {

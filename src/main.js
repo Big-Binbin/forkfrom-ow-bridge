@@ -3,6 +3,7 @@ import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { resolveModelsFile, validateModelsFile } from './workbuddy-config.js';
+import { searchConfig, windowsSearchRoots } from './config-finder.js';
 import { dataDirectory } from './platform.js';
 import { randomBytes } from 'node:crypto';
 import { findRuntime, startBackend } from './runtime.js';
@@ -130,7 +131,7 @@ function noteActivity(progress) {
 let probing = false, probeTask;
 const probeAbort = new AbortController();
 function startProbes(modelID, reveal = false, autoImport = false) {
-  if (stopping || refreshing) throw new Error('请等待模型读取完成');
+  if (stopping || refreshing || configSearch) throw new Error('请等待模型读取或配置查找完成');
   if (probing) return { started: false, message: '检测正在进行' };
   const selected = modelID ? models.filter(m => m.id === modelID) : models;
   if (!selected.length) throw new Error('模型不在当前目录中');
@@ -170,7 +171,18 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }
-      if (autoImport && !stopping) await syncPublished();
+      if (autoImport && !stopping) {
+        if (process.platform === 'win32' && !modelsFile && process.env.BUDDY_NO_SYNC !== '1') {
+          const found = await findConfig(true);
+          if (found.candidates.length === 1) {
+            await validateModelsFile(found.candidates[0]);
+            settings = { ...settings, workBuddyModelsFile: found.candidates[0] };
+            await atomicWrite(settingsFile, JSON.stringify(settings));
+            modelsFile = found.candidates[0]; update({ modelsFile });
+          }
+        }
+        await syncPublished();
+      }
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));
   return { started: true };
@@ -188,7 +200,7 @@ function watchRuntime(current) {
 
 async function refresh(restartRuntime = false, useSystemProxy = state.useSystemProxy) {
   if (refreshing) return refreshing;
-  if (probing || stopping) throw new Error('请等待检测完成');
+  if (probing || stopping || configSearch) throw new Error('请等待检测或配置查找完成');
   const proxyEnv = await systemProxyEnvironment(useSystemProxy);
   validated.clear();
   models = [];
@@ -221,7 +233,7 @@ async function readModels() {
 }
 async function setSystemProxy(enabled) {
   if (typeof enabled !== 'boolean') throw new Error('代理开关必须是布尔值');
-  if (refreshing || probing || stopping) throw new Error('请等待读取和检测完成');
+  if (refreshing || probing || stopping || configSearch) throw new Error('请等待读取和检测完成');
   await refresh(true, enabled);
   if (stopping) return;
   settings = { ...settings, useSystemProxy: enabled };
@@ -229,8 +241,27 @@ async function setSystemProxy(enabled) {
   startProbes(undefined, true);
   return { useSystemProxy: enabled };
 }
+let configSearch;
+async function findConfig(afterProbe = false) {
+  if (process.platform !== 'win32') throw new Error('自动查找仅用于 Windows');
+  if (stopping || refreshing || !runtime || (probing && !afterProbe)) throw new Error('请等待服务就绪');
+  if (configSearch) return configSearch;
+  configSearch = (async () => {
+    update({ configSearch: { running: true }, message: 'OpenCode 正在只读查找 WorkBuddy 配置…' });
+    try {
+      const result = await searchConfig(runtime.backend, usableModels(), await windowsSearchRoots(os.homedir()), probeAbort.signal);
+      if (!stopping) update({ configSearch: { running: false, ...result }, message: '运行中' });
+      return result;
+    } catch (error) {
+      if (!stopping) update({ configSearch: { running: false, candidates: [], errors: [error.message] } });
+      throw error;
+    }
+  })();
+  try { return await configSearch; } finally { configSearch = null; }
+}
+
 async function importModels(selectedFile) {
-  if (stopping || probing || refreshing || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
+  if (stopping || probing || refreshing || configSearch || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
   if (selectedFile !== undefined) {
     await validateModelsFile(selectedFile);
     if (modelsFile && modelsFile !== selectedFile && await fs.stat(modelsFile).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
@@ -283,7 +314,7 @@ try {
     proxyEnv: startupProxyEnv,
     log: message => log.write(`${new Date().toISOString()} ${message}\n`),
   });
-  server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, setSystemProxy,
+  server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, findConfig, setSystemProxy,
     status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   update({ message: '正在启动隔离模型服务' });

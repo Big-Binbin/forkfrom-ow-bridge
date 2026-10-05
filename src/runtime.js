@@ -12,6 +12,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 import { Backend, nativePermissions } from './backend.js';
+import { finderAgent } from './config-finder.js';
 import { ProxyAgent } from 'undici';
 
 const exec = promisify(execFile);
@@ -164,7 +165,7 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
 
 export const isolatedConfig = {
   permission: nativePermissions, autoupdate: false, share: 'disabled',
-  agent: { 'buddy-chat': { mode: 'primary', description: 'Text-only external conversation', prompt: 'Reply in plain text to the external conversation. No tool use or local actions. Never claim to have executed an action.', permission: nativePermissions }, 'buddy-bridge': { mode: 'primary', description: 'External client inference only',
+  agent: { 'buddy-config-finder': finderAgent, 'buddy-chat': { mode: 'primary', description: 'Text-only external conversation', prompt: 'Reply in plain text to the external conversation. No tool use or local actions. Never claim to have executed an action.', permission: nativePermissions }, 'buddy-bridge': { mode: 'primary', description: 'External client inference only',
     prompt: 'You are the reasoning component of an external assistant. Never invoke native OpenCode tools. Describe external tool calls only in the requested JSON response. The external client owns execution and supplies tool results on the next request.',
     permission: nativePermissions } },
 };
