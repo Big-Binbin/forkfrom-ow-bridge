@@ -93,7 +93,7 @@ test('runtime download uses the configured proxy and falls back to the npm mirro
   const calls = [];
   const request = async (target, init) => {
     calls.push({ target, proxied: Boolean(init.dispatcher) });
-    if (target.startsWith('https://registry.npmjs.org/')) throw new DOMException('timed out', 'TimeoutError');
+    if (target.startsWith('https://registry.npmjs.org/')) return new Response('', { status: 503 });
     if (target === `${mirror}/latest`) return Response.json({ name: pkg.name, version: '1.18.33',
       dist: { integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`, tarball } });
     assert.equal(target, tarball);
@@ -190,4 +190,24 @@ test('tarball fallback keeps the official checksum and rejects different mirror 
     } else await result;
     assert.deepEqual(calls, [`https://registry.npmjs.org/${pkg.name}/latest`, official, mirror]);
   }
+});
+
+test('dead proxy falls back to direct metadata and tarball with integrity verification', async t => {
+  const root = await fixture(t), pkg = runtimePackage();
+  await binary(path.join(root, 'package', 'bin', pkg.binary), '1.18.33');
+  const archive = path.join(root, 'source.tgz');
+  await tar({ cwd: root, file: archive, gzip: true }, [`package/bin/${pkg.binary}`]);
+  const bytes = await fs.readFile(archive), calls = [];
+  const request = async (url, init) => {
+    calls.push(Boolean(init.dispatcher));
+    if (init.dispatcher) throw new Error('ECONNREFUSED');
+    if (url.endsWith('/latest')) return Response.json({name: pkg.name, version:'1.18.33', dist:{
+      integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+      tarball: `https://registry.npmjs.org/${pkg.name}/-/${pkg.name}-1.18.33.tgz` }});
+    return new Response(bytes);
+  };
+  const file = await findRuntime(path.join(root,'install'), () => {}, {fetch:request, candidates:[],
+    probe:synthetic.probe, proxyEnv:{HTTPS_PROXY:'http://127.0.0.1:7892'}});
+  assert.equal(await fs.readFile(file,'utf8'),synthetic.content('1.18.33'));
+  assert.deepEqual(calls,[true,false,false]);
 });

@@ -49,7 +49,20 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
   const registries = options.registries ?? REGISTRIES;
   const proxy = options.proxyEnv?.HTTPS_PROXY || options.proxyEnv?.https_proxy;
   const dispatcher = proxy ? new ProxyAgent(proxy) : undefined;
-  const requestOptions = timeout => ({ signal: AbortSignal.timeout(timeout), ...(dispatcher ? { dispatcher } : {}) });
+  let useProxy = Boolean(dispatcher);
+  const downloadRequest = async (url, timeout) => {
+    const init = () => ({ signal: AbortSignal.timeout(timeout), ...(useProxy ? { dispatcher } : {}) });
+    try { return await request(url, init()); }
+    catch (error) {
+      if (!useProxy) throw error;
+      useProxy = false;
+      const message = '系统代理连接失败，正在直连下载 OpenCode';
+      updateStatus(message); log(message);
+      await dispatcher.destroy();
+      await options.onProxyFallback?.();
+      return request(url, init());
+    }
+  };
   const validMetadata = metadata => {
     const dist = metadata?.dist;
     let tarball;
@@ -63,7 +76,7 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
     for (const registry of registries) {
       updateStatus(`正在从 ${new URL(registry).hostname} 获取 OpenCode 版本信息`);
       try {
-        const response = await request(`${registry}/${pkg.name}/latest`, requestOptions(30000));
+        const response = await downloadRequest(`${registry}/${pkg.name}/latest`, 30000);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const metadata = await response.json();
         if (!validMetadata(metadata)) throw new Error('返回的安装信息不可信');
@@ -85,7 +98,7 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
     for (const tarball of tarballs) {
       updateStatus(`正在从 ${new URL(tarball).hostname} 下载 OpenCode ${metadata.version}，首次启动可能需要几分钟`);
       try {
-        const response = await request(tarball, requestOptions(180000));
+        const response = await downloadRequest(tarball, 180000);
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
         await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
         const hash = createHash('sha512');

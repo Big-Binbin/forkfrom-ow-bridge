@@ -25,7 +25,9 @@ export async function validateFoundConfig(file) {
 }
 
 export async function searchConfig(backend, models, roots, signal, validate = validateFoundConfig) {
-  const candidates = new Set();
+  // OpenCode glob omits dot directories even with explicit hidden patterns.
+  // Supplement its results with a local directory-only walk; never send contents to the model.
+  const candidates = new Set(await findHiddenConfigs(roots, signal, validate));
   const errors = [];
   for (const model of models.filter(m => m.toolcall !== false)) {
     signal?.throwIfAborted();
@@ -63,7 +65,7 @@ export async function searchConfig(backend, models, roots, signal, validate = va
     }
   }
   if (!models.some(m => m.toolcall !== false)) errors.push('暂无可用于查找的免费模型，请先检测模型或手动选择配置');
-  return { candidates: [], errors };
+  return { candidates: [...candidates], errors };
 }
 
 async function guardedMessage(backend, route, sessionID, body, signal) {
@@ -96,4 +98,29 @@ export async function windowsSearchRoots(home, env = process.env) {
     if (await fs.stat(root).then(s => s.isDirectory(), () => false)) roots.push(root);
   }
   return [...new Set(roots)];
+}
+
+async function findHiddenConfigs(roots, signal, validate) {
+  const found = [], visited = new Set(), pending = [...roots];
+  while (pending.length) {
+    signal?.throwIfAborted();
+    const dir = path.resolve(pending.pop());
+    const key = process.platform === 'win32' ? dir.toLowerCase() : dir;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const child = path.join(dir, entry.name);
+      if (entry.name.toLowerCase() === '.workbuddy') {
+        try { found.push(await validate(path.join(child, 'models.json'))); } catch {}
+      }
+      // Dependency stores and OS internals are not relocated WorkBuddy user data.
+      if (!['node_modules', '.git', 'Windows', '$Recycle.Bin', 'System Volume Information'].includes(entry.name)) pending.push(child);
+    }
+    if (path.basename(dir).toLowerCase() === '.workbuddy') {
+      try { found.push(await validate(path.join(dir, 'models.json'))); } catch {}
+    }
+  }
+  return [...new Set(found)];
 }

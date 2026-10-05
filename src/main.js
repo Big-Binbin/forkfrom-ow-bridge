@@ -312,6 +312,12 @@ try {
   }
   binary = await findRuntime(dataDir, message => update({ message }), {
     proxyEnv: startupProxyEnv,
+    onProxyFallback: async () => {
+      if (settings.useSystemProxy !== true) {
+        startupProxyEnv = await systemProxyEnvironment(false);
+        update({ useSystemProxy: false });
+      }
+    },
     log: message => log.write(`${new Date().toISOString()} ${message}\n`),
   });
   server = createServer({ key, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, findConfig, setSystemProxy,

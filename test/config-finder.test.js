@@ -47,7 +47,7 @@ test('finder falls back after model failure and never accepts text-only invented
     if (method === 'GET') return [{ parts: [{ type: 'text', text: '/some/models.json' }] }];
     return {};
   } };
-  const result = await searchConfig(backend, [{ id: 'opencode/one' }, { id: 'opencode/two' }], ['/'], undefined, () => { throw new Error('Should not validate invented paths'); });
+  const result = await searchConfig(backend, [{ id: 'opencode/one' }, { id: 'opencode/two' }], [path.join(os.tmpdir(), 'ow-missing-test-root')], undefined, () => { throw new Error('Should not validate invented paths'); });
   assert.deepEqual(result.candidates, []);
   assert.equal(result.errors.length, 1);
   assert.equal(deleted, 2);
@@ -63,7 +63,7 @@ test('finder cancels without continuing to other models and still cleans session
     if (method === 'DELETE') deleted = true;
     return {};
   } };
-  await assert.rejects(searchConfig(backend, [{ id: 'opencode/one' }, { id: 'opencode/two' }], ['/'], controller.signal), /canceled/);
+  await assert.rejects(searchConfig(backend, [{ id: 'opencode/one' }, { id: 'opencode/two' }], [path.join(os.tmpdir(), 'ow-missing-test-root')], controller.signal), /canceled/);
   assert.equal(sessions, 1);
   assert.equal(deleted, true);
 });
@@ -84,7 +84,7 @@ test('provider errors in successful HTTP envelopes are reported as failures', as
     if (route === '/permission') return [];
     return route === '/session' ? { id: 'error' } : { info: { error: { data: { message: 'quota exhausted' } } } };
   } };
-  const result = await searchConfig(backend, [{ id: 'opencode/test' }], ['/']);
+  const result = await searchConfig(backend, [{ id: 'opencode/test' }], [path.join(os.tmpdir(), 'ow-missing-test-root')]);
   assert.deepEqual(result.candidates, []);
   assert.match(result.errors[0], /quota exhausted/);
 });
@@ -103,8 +103,28 @@ test('finder rejects native approvals only for its own session', async () => {
     if (method === 'GET') return [];
     return {};
   } };
-  await searchConfig(backend, [{ id: 'opencode/test' }], ['/']);
+  await searchConfig(backend, [{ id: 'opencode/test' }], [path.join(os.tmpdir(), 'ow-missing-test-root')]);
   assert.equal(replies.length, 2);
   assert.ok(replies.every(r => r.body.reply === 'reject'));
   assert.ok(!replies.some(r => r.route.includes('other')));
+});
+
+test('hidden WorkBuddy config is retained when OpenCode glob returns only visible config', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-hidden-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const hidden = path.join(root, '中文 空格', '.workbuddy', 'models.json');
+  const visible = path.join(root, 'WorkBuddy', 'models.json');
+  for (const file of [hidden, visible]) {
+    await fs.mkdir(path.dirname(file), {recursive:true});
+    await fs.writeFile(file,'[]');
+  }
+  const backend = {async request(route, method) {
+    if (route === '/permission') return [];
+    if (route === '/session') return {id:'hidden'};
+    if (method === 'GET') return [{parts:[{type:'tool',tool:'glob',state:{status:'completed',input:{path:root},output:visible}}]}];
+    return {};
+  }};
+  const result = await searchConfig(backend,[{id:'opencode/test'}],[root]);
+  assert.deepEqual(new Set(result.candidates), new Set([hidden,visible]));
+  assert.equal(await fs.readFile(hidden,'utf8'),'[]');
 });
