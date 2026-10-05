@@ -174,7 +174,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
       if (autoImport && !stopping) {
         if (process.platform === 'win32' && !modelsFile && process.env.BUDDY_NO_SYNC !== '1') {
           const found = await findConfig(true);
-          if (found.candidates.length === 1) {
+          if (found.candidates.length) {
             await validateModelsFile(found.candidates[0]);
             settings = { ...settings, workBuddyModelsFile: found.candidates[0] };
             await atomicWrite(settingsFile, JSON.stringify(settings));

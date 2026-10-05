@@ -128,3 +128,24 @@ test('hidden WorkBuddy config is retained when OpenCode glob returns only visibl
   assert.deepEqual(new Set(result.candidates), new Set([hidden,visible]));
   assert.equal(await fs.readFile(hidden,'utf8'),'[]');
 });
+
+test('multiple configs rank by access time captured before validation, not modification time', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-access-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const old = path.join(root, 'old', '.workbuddy', 'models.json');
+  const recent = path.join(root, 'recent', '.workbuddy', 'models.json');
+  for (const file of [old, recent]) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, '[]');
+  }
+  await fs.utimes(old, 1000, 9000);
+  await fs.utimes(recent, 2000, 3000);
+  const validate = async file => {
+    await validateFoundConfig(file);
+    // Simulate validation updating the older file's access time.
+    await fs.utimes(file, file === old ? 9000 : 2000, 9000);
+    return file;
+  };
+  const result = await searchConfig({}, [], [root], undefined, validate);
+  assert.deepEqual(result.candidates, [recent, old]);
+});

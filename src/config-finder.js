@@ -25,9 +25,16 @@ export async function validateFoundConfig(file) {
 }
 
 export async function searchConfig(backend, models, roots, signal, validate = validateFoundConfig) {
+  const accessed = new Map();
+  const check = async file => {
+    // Snapshot before validation reads the file; our own reads must not change ranking.
+    if (!accessed.has(file)) accessed.set(file, (await fs.stat(file)).atimeMs);
+    return validate(file);
+  };
+  const ranked = () => [...candidates].sort((a, b) => accessed.get(b) - accessed.get(a) || a.localeCompare(b));
   // OpenCode glob omits dot directories even with explicit hidden patterns.
   // Supplement its results with a local directory-only walk; never send contents to the model.
-  const candidates = new Set(await findHiddenConfigs(roots, signal, validate));
+  const candidates = new Set(await findHiddenConfigs(roots, signal, check));
   const errors = [];
   for (const model of models.filter(m => m.toolcall !== false)) {
     signal?.throwIfAborted();
@@ -50,10 +57,10 @@ export async function searchConfig(backend, models, roots, signal, validate = va
           if (path.basename(found).toLowerCase() !== 'models.json') continue;
           if (!path.isAbsolute(found) && !path.isAbsolute(base || '')) continue;
           const file = path.isAbsolute(found) ? found : path.resolve(base, found);
-          try { candidates.add(await validate(file)); } catch {}
+          try { candidates.add(await check(file)); } catch {}
         }
       }
-      if (candidates.size) return { candidates: [...candidates], errors };
+      if (candidates.size) return { candidates: ranked(), errors };
     } catch (error) {
       if (signal?.aborted) throw error;
       errors.push(`${model.name || model.id}: ${error.message}`);
@@ -65,7 +72,7 @@ export async function searchConfig(backend, models, roots, signal, validate = va
     }
   }
   if (!models.some(m => m.toolcall !== false)) errors.push('暂无可用于查找的免费模型，请先检测模型或手动选择配置');
-  return { candidates: [...candidates], errors };
+  return { candidates: ranked(), errors };
 }
 
 async function guardedMessage(backend, route, sessionID, body, signal) {

@@ -84,11 +84,7 @@ async function action(name, value) {
       }
       const candidates = found.candidates || [];
       if (candidates.length) {
-        const choice = await dialog.showMessageBox({ type: 'question', title: '选择 WorkBuddy 配置',
-          message: '请选择 WorkBuddy 当前使用的配置文件', detail: candidates.map((p, i) => `${i + 1}. ${p}`).join('\n'),
-          buttons: [...candidates.map((_, i) => `使用 ${i + 1}`), '手动选择', '取消'], cancelId: candidates.length + 1 });
-        if (choice.response === candidates.length + 1) return { canceled: true };
-        modelsFile = candidates[choice.response];
+        modelsFile = candidates[0];
       } else {
         await dialog.showMessageBox({ type: 'info', message: found.errors?.length ? '自动查找未完成，请手动选择' : '自动查找未找到配置，请手动选择',
           detail: found.errors?.join('\n') || '请先在 WorkBuddy 保存一个自定义模型，再重试。' });
