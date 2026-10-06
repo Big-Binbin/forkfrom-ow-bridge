@@ -10,7 +10,7 @@ app.setName('OW Bridge');
 app.setAppUserModelId('local.buddy.bridge');
 let window, tray, service, timer, log, quitting = false, mayQuit = false, actionBusy = false;
 let state = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} };
-let dataDir, lastMenu = '';
+let dataDir, lastMenu = '', modelsFileOverride;
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 
 function showWindow() {
@@ -41,13 +41,20 @@ function publish() {
   lastMenu = signature;
   const available = new Set(state.availableModels || []);
   const busy = actionBusy || state.configSearch?.running || state.probe?.running || state.phase !== 'ready';
+  // 目标客户端做成可勾选的子菜单：勾选即写入，取消勾选下次导入时移除本应用条目
+  const chosen = new Set(state.targets || []);
+  const clientItems = (state.clients || []).map(c => ({
+    label: c.label, type: 'checkbox', checked: chosen.has(c.id), enabled: !busy && c.installed,
+    click: () => trayAction('toggle-target', c.id),
+  }));
   tray.setToolTip('OW Bridge');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: activityLabel(state), enabled: false },
     { label: '打开控制面板', click: showWindow }, { type: 'separator' },
     { label: '重新扫描免费模型', enabled: !busy, click: () => trayAction('refresh') },
     { label: '检测全部模型', enabled: !busy, click: () => trayAction('probe') },
-    { label: '导入 WorkBuddy', enabled: !busy, click: () => trayAction('import') },
+    { label: '导入所选客户端', enabled: !busy && chosen.size > 0, click: () => trayAction('import') },
+    { label: '目标客户端', submenu: clientItems.length ? clientItems : [{ label: '未检测到支持的客户端', enabled: false }] },
     ...(process.platform === 'win32' ? [{ label: '自动查找 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('find-config') }, { label: '选择 WorkBuddy 配置…', enabled: !busy, click: () => trayAction('choose-config') }] : []),
     { label: '模型状态', submenu: (state.models || []).map(m => ({ label: `OC · ${m.name} · ${available.has(m.id) ? state.modelResults?.[m.id]?.chatOnly ? '可用 · 仅对话' : '可用' : '不可用'}`, enabled: false })) },
     { type: 'separator' }, { label: '退出 OW Bridge', click: () => app.quit() },
@@ -60,9 +67,27 @@ async function readState() {
   } catch {}
 }
 async function action(name, value) {
-  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart', 'choose-config', 'find-config'].includes(name)) throw new Error('未知操作');
+  if (!['refresh', 'probe', 'import', 'system-proxy', 'restart', 'choose-config', 'find-config', 'toggle-target'].includes(name)) throw new Error('未知操作');
   if (state.configSearch?.running) throw new Error('请等待配置查找完成');
   if (actionBusy) throw new Error('请等待当前操作完成');
+  // 勾选/取消勾选目标客户端：切换后立即写入或清理该客户端，做到托盘操作即时生效
+  if (name === 'toggle-target') {
+    const id = String(value || '');
+    if (!(state.clients || []).some(c => c.id === id && c.installed)) throw new Error('该客户端不可用');
+    const next = new Set(state.targets || []);
+    next.has(id) ? next.delete(id) : next.add(id);
+    actionBusy = name; publish();
+    try {
+      const result = await callService('import', { targets: [...next] });
+      await readState();
+      const entry = (result?.results || []).find(r => r.id === id);
+      if (entry?.changed && entry.needsKey) {
+        await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: `${entry.label} 已写入模型结构`,
+          detail: `该客户端的 API Key 由客户端自行加密保存，程序无法代写。\n\n请在 ${entry.label} 的「添加模型」界面粘贴：\n接口地址：${result.endpoint}\nAPI Key：${result.apiKey}\n\n其余客户端的模型已保持最新。` });
+      }
+      return result;
+    } finally { actionBusy = false; publish(); }
+  }
   if (name === 'restart') {
     actionBusy = name; publish();
     try { await stopService(); state = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} }; await startService(); return {}; }
@@ -72,50 +97,61 @@ async function action(name, value) {
   if (name === 'system-proxy' && typeof value !== 'boolean') throw new Error('代理开关必须为布尔值');
   actionBusy = name; publish();
   try {
-    let modelsFile;
-    if (process.platform === 'win32' && (name === 'find-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
-      let found = state.configSearch;
-      if (name === 'find-config' || !found?.candidates?.length) {
-        const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
-        const response = await fetch(`http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}/admin/find-config`, {
-          method: 'POST', headers: { Authorization: `Bearer ${key}` } });
-        found = await response.json();
-        if (!response.ok) throw new Error(found.error?.message || '自动查找失败');
-      }
-      const candidates = found.candidates || [];
-      if (candidates.length) {
-        modelsFile = candidates[0];
-      } else {
-        await dialog.showMessageBox({ type: 'info', message: found.errors?.length ? '自动查找未完成，请手动选择' : '自动查找未找到配置，请手动选择',
-          detail: found.errors?.join('\n') || '请先在 WorkBuddy 保存一个自定义模型，再重试。' });
-      }
-      name = modelsFile ? 'import' : 'choose-config';
-    }
+    // WorkBuddy 允许把models.json 放在非默认位置，选定后记入 settings，导入时按该路径写入
     if (process.platform === 'win32' && name === 'choose-config') {
       const selection = await dialog.showOpenDialog({ title: '选择 WorkBuddy 的 models.json', message: '请选择 WorkBuddy 实际使用的配置文件。首次使用请先在 WorkBuddy 保存一个自定义模型。', properties: ['openFile'], filters: [{ name: 'JSON 配置', extensions: ['json'] }] });
       if (selection.canceled || !selection.filePaths.length) return { canceled: true };
-      modelsFile = selection.filePaths[0];
-      name = 'import';
+      modelsFileOverride = selection.filePaths[0];
     }
-    const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
-    const endpoint = `http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}`;
-    const response = await fetch(`${endpoint}/admin/${name}`, { method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(name === 'system-proxy' ? { enabled: value } : modelsFile ? { modelsFile } : {}), signal: AbortSignal.timeout(150000) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error?.message || `HTTP ${response.status}`);
-    await readState();
+    if (process.platform === 'win32' && name === 'find-config') {
+      const found = await callService('find-config', {});
+      const candidates = found.candidates || [];
+      if (candidates.length) modelsFileOverride = candidates[0];
+      else await dialog.showMessageBox({ type: 'info', message: found.errors?.length ? '自动查找未完成，请手动选择' : '自动查找未找到配置，请手动选择',
+        detail: found.errors?.join('\n') || '请先在 WorkBuddy 保存一个自定义模型，再重试。' });
+    }
+    // WorkBuddy 的 models.json 可能不在默认位置，选定/查找到的路径需随导入请求一并告知后端
+    const result = await callService(name, {
+      ...(name === 'system-proxy' ? { enabled: value } : {}),
+      ...(name === 'import' && modelsFileOverride ? { modelsFile: modelsFileOverride } : {}),
+    });
+    if (name === 'import' && modelsFileOverride) modelsFileOverride = undefined;
     return result;
   } finally { actionBusy = false; publish(); }
+}
+
+// 统一的本地服务调用入口：带上鉴权头与超时，失败时抛出后端返回的中文错误
+async function callService(name, body) {
+  const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
+  const endpoint = `http://127.0.0.1:${Number(process.env.BUDDY_PORT || 41980)}`;
+  const response = await fetch(`${endpoint}/admin/${name}`, { method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(150000) });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error?.message || `HTTP ${response.status}`);
+  await readState();
+  return result;
 }
 async function trayAction(name) {
   try {
     const result = await action(name);
-    if (['import', 'choose-config', 'find-config'].includes(name) && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: '导入完成', detail: importMessage(result) });
+    if (name === 'import' && !result.canceled) await dialog.showMessageBox({ type: 'info', title: 'OW Bridge', message: '导入完成', detail: importMessage(result) });
   } catch (e) { await dialog.showMessageBox({ type: 'error', title: 'OW Bridge', message: '操作失败', detail: e.message }); }
 }
+// 汇总各客户端导入结果；Trae 系因密钥加密无法代写，需提示用户手动粘贴
 function importMessage(result) {
-  return result.changed === false ? `WorkBuddy 配置已是最新，共 ${result.count} 个模型，无需重复写入。` : `已将 ${result.count} 个可用模型导入 WorkBuddy。`;
+  const results = result?.results || [];
+  const written = results.filter(r => r.changed !== false);
+  const same = results.filter(r => r.changed === false);
+  const lines = [];
+  if (written.length) lines.push(`已将 ${written[0].count} 个可用模型写入：${written.map(r => r.label).join('、')}。`);
+  if (same.length) lines.push(`${same.map(r => r.label).join('、')} 配置已是最新。`);
+  const needKey = written.filter(r => r.needsKey);
+  if (needKey.length) {
+    lines.push('', '以下客户端的 API Key 由客户端自行加密保存，程序无法代写，请复制后在客户端「添加模型」界面粘贴：',
+      `接口地址：${result.endpoint}`, `API Key：${result.apiKey}`, '', `涉及：${needKey.map(r => r.label).join('、')}`);
+  }
+  return lines.join('\n') || '没有可导入的客户端。';
 }
 async function startService() {
   await fs.mkdir(dataDir, { recursive: true });
@@ -164,7 +200,7 @@ else {
       try {
         const result = await action(name, value);
         if (name === 'import' && !result.canceled) await dialog.showMessageBox(window, {
-          type: 'info', title: 'OW Bridge', message: result.changed === false ? '配置已是最新' : '导入完成',
+          type: 'info', title: 'OW Bridge', message: '导入完成',
           detail: importMessage(result), buttons: ['确定'], defaultId: 0, cancelId: 0,
         });
         return { ok: true, result };

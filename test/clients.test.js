@@ -1,0 +1,178 @@
+// 多客户端导入的单元测试：覆盖 ZCode provider 合并、WorkBuddy 兼容行为、
+// Trae 系 vscdb 写入与清理，以及客户端探测。
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { createClients, OWNER, ZCODE_PROVIDER_ID, TRAE_GROUPS } from '../src/clients.js';
+import { importIntoClient, removeFromClient, detectClients } from '../src/import-service.js';
+
+const MODELS = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+// 客户端发出的 model 字段是带前缀的显示名，导入必须使用同一个 id
+const IDS = ['OC · A', 'OC · B'];
+
+function readGroups(file) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  // 直接按键取，避免依赖 LIKE 匹配；键名与写入层一致
+  const row = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get('7_AI.agent.model.model_list_map');
+  const other = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get('unrelated');
+  db.close();
+  return { doc: JSON.parse(String(row.value)), other: JSON.parse(String(other.value)) };
+}
+
+test('ZCode 导入只改本应用的 provider，其余 provider 内容零改动，且清理后完全还原', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-zcode-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'provider_config.json');
+  const before = {
+    schemaVersion: 1,
+    config: {
+      providerOrder: ['keep-1', 'keep-2'],
+      providerConfigRules: { providerRules: [
+        { providerId: 'keep-1', providerName: 'A', config: { access: { apiKey: 'secret-1' } } },
+        { providerId: 'keep-2', providerName: 'B', config: { access: { apiKey: 'secret-2' } } },
+      ] },
+      modelConfigRules: { providerModelRules: [{ modelId: 'm1', providerId: 'keep-1', config: { enabled: true } }], manualProviderModelRules: [] },
+    },
+  };
+  await fs.writeFile(file, JSON.stringify(before, null, 2));
+  const zcode = { ...createClients({ home: root, platform: 'win32' }).find(c => c.id === 'zcode'), locate: () => file };
+
+  const result = await importIntoClient(zcode, MODELS, 'http://127.0.0.1:41980/v1', 'bridge-key');
+  assert.equal(result.changed, true);
+  const after = JSON.parse(await fs.readFile(file, 'utf8'));
+  // 本应用的 provider 被追加，且排在原有 provider 之后
+  assert.deepEqual(after.config.providerOrder, ['keep-1', 'keep-2', ZCODE_PROVIDER_ID]);
+  const rule = after.config.providerConfigRules.providerRules.find(r => r.providerId === ZCODE_PROVIDER_ID);
+  assert.equal(rule.config.access.apiKey, 'bridge-key');
+  assert.equal(rule.config.api.baseUrl, 'http://127.0.0.1:41980/v1');
+  assert.equal(rule.config.api.type, 'openai-chat-completions');
+  assert.deepEqual(rule.config.personalModelIds, IDS);
+  // 原有 provider 逐字节不变
+  for (const original of before.config.providerConfigRules.providerRules) {
+    assert.deepEqual(after.config.providerConfigRules.providerRules.find(r => r.providerId === original.providerId), original);
+  }
+  // 原有 model 规则不变，本应用的规则追加在后面
+  assert.deepEqual(after.config.modelConfigRules.providerModelRules[0], before.config.modelConfigRules.providerModelRules[0]);
+  assert.deepEqual(after.config.modelConfigRules.providerModelRules.slice(1).map(r => r.modelId), IDS);
+  assert.deepEqual(after.config.modelConfigRules.manualProviderModelRules, []);
+
+  // 重复导入不产生任何写入
+  assert.equal((await importIntoClient(zcode, MODELS, 'http://127.0.0.1:41980/v1', 'bridge-key')).changed, false);
+
+  // 清理后与导入前完全一致
+  await removeFromClient(zcode, MODELS, 'http://127.0.0.1:41980/v1', 'bridge-key');
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), before);
+});
+
+test('ZCode 配置格式无法识别时拒绝写入，不破坏原文件', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-zcode-bad-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'provider_config.json');
+  const original = '{"unexpected":true}';
+  await fs.writeFile(file, original);
+  const zcode = { ...createClients({ home: root, platform: 'win32' }).find(c => c.id === 'zcode'), locate: () => file };
+  await assert.rejects(importIntoClient(zcode, MODELS, 'e', 'k'), /无法识别/);
+  assert.equal(await fs.readFile(file, 'utf8'), original);
+});
+
+test('WorkBuddy 保留用户自有模型与 availableModels 同步', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-wb-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'models.json');
+  await fs.writeFile(file, JSON.stringify({
+    models: [{ id: 'mine', url: 'u', apiKey: 'k' }, { id: 'old', buddyBridgeOwner: OWNER }],
+    availableModels: ['mine', 'old'],
+  }));
+  const workbuddy = { ...createClients({ home: root, platform: 'win32' }).find(c => c.id === 'workbuddy'), locate: () => file };
+  await importIntoClient(workbuddy, MODELS, 'http://127.0.0.1:41980/v1', 'k');
+  const after = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.deepEqual(after.models.map(m => m.id), ['mine', ...IDS], '用户模型在前，本应用条目在后');
+  assert.deepEqual(after.availableModels, ['mine', ...IDS], '旧的 owned 条目从可用列表中移除');
+  await removeFromClient(workbuddy, MODELS, 'http://127.0.0.1:41980/v1', 'k');
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).models.map(m => m.id), ['mine']);
+});
+
+test('Trae 系写入覆盖全部 Agent 分组，幂等，且不碰用户自有自定义模型', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-trae-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.vscdb');
+  // 预置一条用户自己的自定义模型，导入后必须原样保留（含其加密密钥）
+  const db = new DatabaseSync(file);
+  const own = { name: 'custom_openai_compatible//mine', ak: 'USER-ENCRYPTED-KEY', config_source: 3 };
+  const document = Object.fromEntries(TRAE_GROUPS.map(g => [g, [own]]));
+  db.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)');
+  db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run('7_AI.agent.model.model_list_map', JSON.stringify(document));
+  db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run('unrelated', JSON.stringify({ keep: true }));
+  db.close();
+
+  const client = { ...createClients({ env: { APPDATA: root }, home: root, platform: 'win32' }).find(c => c.id === 'traecodecn'), locate: () => file };
+  const result = await importIntoClient(client, MODELS, 'http://127.0.0.1:41980/v1', 'secret');
+  assert.equal(result.changed, true);
+  assert.equal(result.needsKey, true, '密钥不可代写，必须提示用户手动补填');
+
+  const { doc, other } = readGroups(file);
+  for (const group of TRAE_GROUPS) {
+    const ours = doc[group].filter(m => m.name === `custom_openai_compatible//${IDS[0]}`);
+    assert.equal(ours.length, 1, `${group} 中本应用条目有且仅有一份`);
+    assert.equal(ours[0].ak, null, '密钥留空，等待用户在客户端内填写');
+    assert.equal(ours[0].base_url, 'http://127.0.0.1:41980/v1/chat/completions');
+    assert.equal(ours[0].custom_model_id.length, 10);
+    // 用户自己的条目必须还在，且密钥未被改动
+    assert.equal(doc[group].filter(m => m.name === own.name).length, 1);
+    assert.equal(doc[group].find(m => m.name === own.name).ak, 'USER-ENCRYPTED-KEY');
+  }
+  assert.deepEqual(other, { keep: true }, '同一库中的其它表项不受影响');
+
+  // 重复导入不产生写入
+  assert.equal((await importIntoClient(client, MODELS, 'http://127.0.0.1:41980/v1', 'secret')).changed, false);
+
+  // 清理只移除本应用条目
+  await removeFromClient(client, MODELS, 'http://127.0.0.1:41980/v1', 'secret');
+  const cleaned = readGroups(file).doc;
+  for (const group of TRAE_GROUPS) {
+    assert.deepEqual(cleaned[group].map(m => m.name), [own.name], '清理后只剩用户自己的条目');
+  }
+});
+
+test('Trae 数据库不存在模型配置时明确报错', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-trae-empty-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.vscdb');
+  const db = new DatabaseSync(file);
+  db.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)');
+  db.close();
+  const client = { ...createClients({ env: { APPDATA: root }, home: root, platform: 'win32' }).find(c => c.id === 'traecodecn'), locate: () => file };
+  await assert.rejects(importIntoClient(client, MODELS, 'e', 'k'), /未在该客户端中找到模型配置/);
+});
+
+test('客户端探测报告安装状态，Trae 系标记为需手动补填', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-detect-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, '.zcode', 'v2'), { recursive: true });
+  await fs.writeFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), '{"config":{}}');
+  const list = await detectClients({ env: { APPDATA: path.join(root, 'appdata') }, home: root, platform: 'win32' });
+  const byId = Object.fromEntries(list.map(c => [c.id, c]));
+  assert.equal(byId.zcode.installed, true);
+  assert.equal(byId.zcode.auto, true);
+  assert.equal(byId.workbuddy.installed, false);
+  assert.equal(byId.traecodecn.installed, false);
+  assert.equal(byId.traecodecn.auto, false, 'Trae 系无法全自动导入');
+  assert.match(byId.qoder.note, /API Key/);
+  // 全部 7 个目标都在，且 Trae 系五个客户端齐备
+  for (const id of ['workbuddy', 'zcode', 'traecodecn', 'traecode', 'traeworkcn', 'qodercn', 'qoder']) assert.ok(byId[id], `缺少客户端 ${id}`);
+});
+
+test('未安装的客户端探测路径不存在的 APPDATA 时返回 null', async () => {
+  const list = createClients({ env: {}, home: 'C:\\none', platform: 'win32' });
+  assert.equal(list.find(c => c.id === 'traecodecn').locate({ env: {} }), null);
+  assert.ok(list.find(c => c.id === 'workbuddy').locate({ env: {} }));
+});
+
+test('macOS 仅保留 WorkBuddy，Windows 提供全部七个目标', () => {
+  assert.deepEqual(createClients({ home: '/h', platform: 'darwin' }).map(c => c.id), ['workbuddy']);
+  assert.deepEqual(createClients({ home: 'C:\\h', platform: 'win32' }).map(c => c.id),
+    ['workbuddy', 'zcode', 'traecodecn', 'traecode', 'traeworkcn', 'qodercn', 'qoder']);
+});

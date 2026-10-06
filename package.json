@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "scripts": {
     "start": "node src/main.js",
@@ -23,7 +23,7 @@
     "electron": "44.4.5",
     "electron-builder": "26.15.3"
   },
-  "description": "OW Bridge — 让 WorkBuddy 使用 OpenCode 免费模型",
+  "description": "OW Bridge — 让 WorkBuddy / ZCode / Trae 系等 AI 客户端使用 OpenCode 免费模型",
   "author": "OW Bridge",
   "main": "desktop/main.cjs",
   "build": {

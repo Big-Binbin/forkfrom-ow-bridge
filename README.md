@@ -1,8 +1,28 @@
 # OW Bridge
 
-跨平台托盘应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型。使用 Electron 共用界面和现有 Node.js 代理核心。
+跨平台托盘应用，通过隔离的 OpenCode 为本机AI 客户端提供免费模型。支持 WorkBuddy、ZCode、Trae 系（TraeCode CN / TraeCode / TraeWork CN / Qoder / Qoder CN），可同时导入多个客户端。使用 Electron 共用界面和现有 Node.js 代理核心。
 
 > **Windows x64 免安装版已在 Windows 实机验证，推荐下载 v0.2.8 portable 包。macOS（Apple Silicon）版也有实际使用验证。Windows ARM64、Linux 仍未正式测试，不能沿用 x64 的验证结论。**
+>
+> **本仓库为 fork：在上游 v0.2.8 基础上把单一 WorkBuddy 目标改造为多客户端适配层（见下节）。**
+
+## 支持的导入目标
+
+| 客户端 | 配置位置 | 导入方式 |
+|---|---|---|
+| WorkBuddy | `~/.workbuddy/models.json` | 全自动 |
+| ZCode | `~/.zcode/v2/provider_config.json` | 全自动 |
+| TraeCode CN | `%APPDATA%\Trae CN\User\globalStorage\state.vscdb` | 写入结构，密钥需手动补填 |
+| TraeCode | `%APPDATA%\Trae ...` | 同上 |
+| TraeWork CN | `%APPDATA%\TRAE SOLO CN\...` | 同上 |
+| Qoder CN | `%APPDATA%\Qoder CN\...` | 同上 |
+| Qoder | `%APPDATA%\Qoder\...` | 同上 |
+
+在控制面板「导入到」中勾选目标（可多选），或从托盘菜单「目标客户端」逐个勾选。再次导入时本应用写入的条目会被替换，手动配置的模型一律保留。
+
+**Trae 系为何需要手动补填密钥**：这些客户端把 API Key 存在自己的加密字段（`ak`）里，加密方案由客户端私有实现，程序无法复现，写入的密文会导致请求认证失败。因此程序负责写入模型名称、接口地址和能力参数，密钥留空并在导入完成后提示你复制到客户端的「添加模型」界面粘贴一次。
+
+**DeepSeek Harness 不支持**：它是纯 ACP 客户端（连接外部 agent 用），没有任何用户可写的模型配置入口，无法接入。
 
 ## 界面预览
 
@@ -58,9 +78,27 @@ npm run build:mac
 npm run build:win
 ```
 
-运行核心服务：`npm start`。开发依赖 Node.js 22+；打包后的应用不要求用户另装 Node。
+运行核心服务：`npm start`。开发依赖 Node.js 22+（多客户端适配层用到内置 `node:sqlite`，需要 Node 22.5+；推荐 24）。打包后的应用不要求用户另装 Node。
 
-Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为实验性入口，系统代理和 WorkBuddy 集成尚未验证。平台路径、架构、退出清理与实机验收见 [跨平台说明](docs/cross-platform.md)。
+Windows ARM64：`npm run build:win:arm64`。Linux 的 `npm run build:linux` 为实验性入口，系统代理和多客户端集成尚未验证。平台路径、架构、退出清理与实机验收见 [跨平台说明](docs/cross-platform.md)。
+
+### 多客户端适配层
+
+上游把 WorkBuddy 的 `models.json` 格式硬编码在同步、界面和托盘三处。本仓库改为按客户端分派：
+
+- `src/clients.js` — 每个客户端一个描述符（id、显示名、配置路径、合并函数）。新增产品只需在这里加一条。
+- `src/import-service.js` — 统一的导入/移除入口，负责加锁、备份、「先清理再切换」和「无变化则不写」。
+- `src/trae-store.js` — VS Code 系（Trae / Qoder）数据库写入。客户端运行时持有数据库，所以先在副本上改再整体替换，并保留时间戳备份。
+- `src/workbuddy-config.js`、`src/sync.js` — 保留给 WorkBuddy 的路径查找与配置查找，行为与上游一致。
+
+Trae 系的一条模型必须写进全部 7 个 Agent 分组（`builder`、`builder_v3`、`chat_v3`、`code_reviewer`、`code_review_summary`、`refactor`、`solo_agent`），缺任一组该模型在对应 Agent 下就不可见。条目按模型名匹配移除，因此用户自己的自定义模型不受影响。
+
+验证脚本（均不修改真实配置，只在副本上操作）：
+
+```sh
+node scripts/验证trae写入.mjs   # Trae vscdb：7 分组写入、幂等、清理
+node scripts/验证真实结构.mjs   # 用本机真实配置的副本跑 WorkBuddy / ZCode 全流程
+```
 
 ## 代理行为和限制
 
@@ -91,6 +129,8 @@ Windows 首次启动默认读取系统 HTTP/HTTPS 代理，没有可用配置时
 
 ## 验证
 
-`npm test` 覆盖协议校验、导入与退出清理、目录能力映射、图片转发、推理档位和系统代理解析。**Windows x64 portable 已由用户在 Windows 实机验证**，Windows Codex 记录包含核心服务、Electron 启动、模型扫描、隔离配置导入和 5 个模型真实 API 请求成功；v0.2.8 自动测试 104 项通过、0 跳过。这里不承诺所有模型或复杂工作流均稳定。macOS 有既有实际使用验证；Windows ARM64、Linux 仍未正式测试。产物未做商用发布签名/公证。
+`npm test` 覆盖协议校验、导入与退出清理、目录能力映射、图片转发、推理档位、系统代理解析，以及多客户端适配层（ZCode provider 合并不影响他人配置、WorkBuddy 兼容性、Trae 系 vscdb 七分组写入与清理、客户端探测）。**Windows x64 portable 已由用户在 Windows 实机验证**，Windows Codex 记录包含核心服务、Electron 启动、模型扫描、隔离配置导入和 5 个模型真实 API 请求成功；本 fork 自动测试 112 项通过、0 跳过。这里不承诺所有模型或复杂工作流均稳定。macOS 有既有实际使用验证；Windows ARM64、Linux 仍未正式测试。产物未做商用发布签名/公证。
+
+多客户端部分已在 Windows 实机验证：ZCode 与 WorkBuddy 的导入→重复导入→清理全流程在本机真实配置的副本上跑通，清理后内容与原始一致；Trae 系在真实 `state.vscdb` 副本上验证 7 个分组均写入、重复导入不产生写入、清理只移除本应用条目且用户原有自定义模型（含其加密密钥）完好。**尚未验证**：把模型实际写入运行中的客户端后，客户端 UI 是否立即识别并可发起对话 —— 这需要在客户端里手工补填密钥后实测。
 
 自动查找额外通过本地目录枚举补齐 OpenCode glob 可能漏掉的 `.workbuddy` 隐藏目录，并与模型找到的候选合并。自动查找只允许目录和文件名搜索，配置内容由本地程序验证，不交给模型。依赖可用的免费模型；查找失败仍可手动选择。已有有效旧文件时不会判断其是否已被 WorkBuddy 弃用，请通过托盘重新查找。详见 [配置查找说明](docs/config-finder.md)。

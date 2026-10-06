@@ -12,7 +12,8 @@ import { systemProxyEnvironment } from './system-proxy.js';
 import { prepare, BridgeError } from './protocol.js';
 import { PROBE_TIMEOUT, probeBody, probeModel, probeFailure, formatUnsupported } from './probe.js';
 import { modelResult, withRequestMeta } from './model-status.js';
-import { atomicWrite, syncModels } from './sync.js';
+import { atomicWrite } from './sync.js';
+import { importIntoClient, removeFromClient, detectClients, createClients } from './import-service.js';
 
 const dataDir = process.env.BUDDY_DATA_DIR || dataDirectory();
 const port = Number(process.env.BUDDY_PORT || 41980);
@@ -62,24 +63,58 @@ const attachTranslator = runtime => {
   return runtime;
 };
 let syncWrites = Promise.resolve();
+// Which clients this run publishes to. Stored in settings so a restart keeps the user's choice.
+// An empty list means "nothing chosen yet" and nothing is written.
+let targets = Array.isArray(settings.targets) ? settings.targets.filter(id => typeof id === 'string') : [];
+let clients = createClients({ env: process.env, home: os.homedir() });
+// Upgrading from a WorkBuddy-only build: an existing configuration that still carries this app's
+// entries is cleaned up and refreshed exactly as before, so old models never linger pointing at a
+// dead endpoint. A fresh install adopts WorkBuddy too, preserving the original one-click behaviour.
+if (!targets.length) {
+  const adopted = process.platform === 'win32'
+    ? (await resolveModelsFile({ saved: settings.workBuddyModelsFile })
+      ? ['workbuddy']
+      : (await detectClients({ platform: 'win32' })).filter(c => c.installed && c.auto).map(c => c.id))
+    : ['workbuddy'];
+  targets = adopted;
+}
+update({ clients: await detectClients(), targets });
+
+// WorkBuddy can keep its models.json outside the default location, so its adapter takes the
+// remembered path instead of the computed one. The other clients have a fixed location.
 let modelsFile = process.platform === 'win32'
   ? await resolveModelsFile({ saved: settings.workBuddyModelsFile })
   : process.env.BUDDY_MODELS_FILE || path.join(os.homedir(), '.workbuddy/models.json');
 update({ modelsFile });
 
+// Resolve one client id to its descriptor, refusing unknown ids rather than guessing.
+// WorkBuddy's target may be a remembered location, so it overrides the computed path.
+function clientById(id) {
+  const client = clients.find(c => c.id === id);
+  if (!client) throw new Error(`未知的目标客户端：${id}`);
+  return client.id === 'workbuddy' && modelsFile ? { ...client, locate: () => modelsFile } : client;
+}
+
+// Publish (or clear, when the model list is empty) the given models into every chosen client.
+// Failures are collected per client so one bad target cannot block the others.
 function syncPublished(published = publishedModels()) {
   syncWrites = syncWrites.then(async () => {
-    let sync;
-    if (process.env.BUDDY_NO_SYNC === '1') sync = { skipped: true, count: published.length };
+    let results = [];
+    if (process.env.BUDDY_NO_SYNC === '1') results = [{ skipped: true, count: published.length }];
     else {
-      try {
-        if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请点击导入并选择 models.json；首次使用请先在 WorkBuddy 保存一个自定义模型。');
-        sync = await syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true, requireExisting: process.platform === 'win32' });
+      for (const id of targets) {
+        try {
+          const client = clientById(id);
+          results.push(published.length
+            ? await importIntoClient(client, published, `${endpoint}/chat/completions`, key)
+            : await removeFromClient(client, published, `${endpoint}/chat/completions`, key));
+        }
+        catch (e) { results.push({ id, label: id, error: e.message }); }
       }
-      catch (e) { sync = { error: e.message }; }
+      if (targets.length && !published.length) results = results.filter(r => r.changed !== false || r.count);
     }
-    update({ sync: { ...sync, time: new Date().toISOString() } });
-    return sync;
+    update({ sync: { results, time: new Date().toISOString() } });
+    return results;
   });
   return syncWrites;
 }
@@ -171,8 +206,10 @@ function startProbes(modelID, reveal = false, autoImport = false) {
         pending.shift();
         update({ probe: { running: true, pending: [...pending] } });
       }
+      // A first run adopts the default WorkBuddy config only when WorkBuddy is actually a
+      // target; the other clients are located automatically and need no search.
       if (autoImport && !stopping) {
-        if (process.platform === 'win32' && !modelsFile && process.env.BUDDY_NO_SYNC !== '1') {
+        if (process.platform === 'win32' && targets.includes('workbuddy') && !modelsFile && process.env.BUDDY_NO_SYNC !== '1') {
           const found = await findConfig(true);
           if (found.candidates.length) {
             await validateModelsFile(found.candidates[0]);
@@ -181,7 +218,7 @@ function startProbes(modelID, reveal = false, autoImport = false) {
             modelsFile = found.candidates[0]; update({ modelsFile });
           }
         }
-        await syncPublished();
+        if (targets.length) await syncPublished();
       }
     } finally { probing = false; update({ probe: { running: false } }); }
   })().catch(e => console.error('Model detection failed:', e.message));
@@ -242,6 +279,8 @@ async function setSystemProxy(enabled) {
   return { useSystemProxy: enabled };
 }
 let configSearch;
+// WorkBuddy can keep its config outside the standard location, so it keeps the model-assisted
+// search: OpenCode looks for models.json with read-only tools and this app validates the result.
 async function findConfig(afterProbe = false) {
   if (process.platform !== 'win32') throw new Error('自动查找仅用于 Windows');
   if (stopping || refreshing || !runtime || (probing && !afterProbe)) throw new Error('请等待服务就绪');
@@ -260,21 +299,49 @@ async function findConfig(afterProbe = false) {
   try { return await configSearch; } finally { configSearch = null; }
 }
 
-async function importModels(selectedFile) {
+// Import into the chosen clients. Passing an explicit list replaces the saved selection, which
+// first withdraws this app's entries from the clients that are no longer selected.
+async function importModels(payload) {
+  const selected = payload?.targets;
+  const chosenFile = payload?.modelsFile;
   if (stopping || probing || refreshing || configSearch || state.phase !== 'ready') throw new Error('请等待读取和检测完成后导入');
-  if (selectedFile !== undefined) {
-    await validateModelsFile(selectedFile);
-    if (modelsFile && modelsFile !== selectedFile && await fs.stat(modelsFile).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
+  // WorkBuddy 的 models.json 可被用户指定到其它位置。切换前先用旧路径清理本应用条目，
+  // 否则这些条目会继续指向即将消失的接口；清理完成后才切换到新路径并写入。
+  if (chosenFile !== undefined && chosenFile !== modelsFile) {
+    await validateModelsFile(chosenFile);
+    if (modelsFile && await fs.stat(modelsFile).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
       const cleanup = await syncPublished([]);
-      if (cleanup.error) throw new Error(cleanup.error);
+      const failed = cleanup.filter(r => r.error);
+      if (failed.length) throw new Error(`清理原配置失败：${failed.map(r => `${r.label}：${r.error}`).join('；')}`);
     }
-    const nextSettings = { ...settings, workBuddyModelsFile: selectedFile };
-    await atomicWrite(settingsFile, JSON.stringify(nextSettings));
-    settings = nextSettings; modelsFile = selectedFile; update({ modelsFile });
+    settings = { ...settings, workBuddyModelsFile: chosenFile };
+    await atomicWrite(settingsFile, JSON.stringify(settings));
+    modelsFile = chosenFile; update({ modelsFile });
   }
-  const sync = await syncPublished();
-  if (sync.error) throw new Error(sync.error);
-  return sync;
+  if (selected !== undefined) {
+    if (!Array.isArray(selected) || selected.some(id => typeof id !== 'string')) throw new Error('目标客户端列表格式不正确');
+    const next = [...new Set(selected)];
+    for (const id of next) clientById(id);
+    // Deselecting a client must remove the entries this app put there, or they would keep
+    // pointing at an endpoint that is about to disappear.
+    const dropped = targets.filter(id => !next.includes(id));
+    if (dropped.length) {
+      const cleanup = await syncPublished([]);
+      if (cleanup.some(r => r.error)) {
+        const failed = cleanup.filter(r => r.error).map(r => `${r.label}：${r.error}`).join('；');
+        throw new Error(`清理原目标失败：${failed}`);
+      }
+    }
+    targets = next;
+    settings = { ...settings, targets };
+    await atomicWrite(settingsFile, JSON.stringify(settings));
+    update({ targets });
+  }
+  if (!targets.length) throw new Error('请先选择要导入的客户端');
+  const results = await syncPublished();
+  const failed = results.filter(r => r.error);
+  if (failed.length) throw new Error(failed.map(r => `${r.label}：${r.error}`).join('；'));
+  return { results, targets, apiKey: key, endpoint: `${endpoint}/chat/completions` };
 }
 
 async function shutdown(code = 0) {

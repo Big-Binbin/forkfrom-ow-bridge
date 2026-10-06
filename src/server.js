@@ -37,7 +37,7 @@ export function createServer({ key, backend, getModels, refresh, importModels, f
       }
       if (req.method === 'POST' && route === '/admin/system-proxy') return json(res, 200, await setSystemProxy((await readBody(req)).enabled));
       if (req.method === 'POST' && route === '/admin/find-config') return json(res, 200, await findConfig());
-      if (req.method === 'POST' && route === '/admin/import') return json(res, 200, await importModels((await readBody(req)).modelsFile));
+      if (req.method === 'POST' && route === '/admin/import') return json(res, 200, await importModels(await readBody(req)));
       if (req.method === 'POST' && route === '/admin/refresh') return json(res, 200, await refresh());
       if (req.method !== 'POST' || route !== '/v1/chat/completions') return json(res, 404, { error: { message: 'Not found' } });
       if (active.size > 4) throw new BridgeError('At most four requests may run at once', 429, 'busy');

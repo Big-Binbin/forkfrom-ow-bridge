@@ -42,7 +42,7 @@ test('startup imports once; repeated checks and reads require import; exit remov
     await waitFor(s => s.phase === 'ready' && !s.probe.running);
     const initial = await fs.readFile(config, 'utf8');
     const backups = async () => (await fs.readdir(root)).filter(name => name.endsWith('.bak')).length;
-    assert.equal(await backups(), 2, 'One startup cleanup and one import after the full batch');
+    assert.equal(await backups(), 1, 'Startup clears stale owned entries in a single write');
     assert.deepEqual(JSON.parse(initial).map(m => m.id), ['personal', 'OC · A', 'OC · B']);
     const key = (await fs.readFile(path.join(root, 'api-key'), 'utf8')).trim();
     async function post(route, payload = {}) {
@@ -78,7 +78,7 @@ test('startup imports once; repeated checks and reads require import; exit remov
     await checkTranslator('none');
     assert.equal(JSON.parse(await fs.readFile(path.join(root, 'settings.json'), 'utf8')).useSystemProxy, false);
     assert.equal(await fs.readFile(config, 'utf8'), initial, 'Network mode changes do not import models');
-    assert.equal(await backups(), 2, 'Repeated checks and reads produce no config writes');
+    assert.equal(await backups(), 1, 'Repeated checks and reads produce no config writes');
     await post('import');
     assert.deepEqual(JSON.parse(await fs.readFile(config, 'utf8')).map(m => m.id), ['personal', 'OC · A']);
     catalog.failed = []; catalog.chatOnly = ['opencode/b']; await writeCatalog();
