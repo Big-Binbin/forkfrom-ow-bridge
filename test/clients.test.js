@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import yaml from 'js-yaml';
-import { createClients, OWNER, ZCODE_PROVIDER_ID, TRAE_GROUPS } from '../src/clients.js';
+import { createClients, OWNER, ZCODE_PROVIDER_ID, TRAE_GROUPS, traeEntry, zcodeMerge } from '../src/clients.js';
 import { importIntoClient, removeFromClient, detectClients } from '../src/import-service.js';
-import { parsePatch } from '../src/dsh-config.js';
+import { parsePatch, dshProviderEntry } from '../src/dsh-config.js';
 
 const MODELS = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
 // 客户端发出的 model 字段是带前缀的显示名，导入必须使用同一个 id
@@ -238,4 +238,22 @@ test('dsh patch 格式非法时拒绝写入', async t => {
   const dsh = { ...createClients({ home: root, platform: 'win32' }).find(c => c.id === 'dsh'), locate: () => patch, credentials: () => credentials };
   await assert.rejects(importIntoClient(dsh, MODELS, 'e', 'k'), /格式无法识别/);
   assert.equal(await fs.readFile(patch, 'utf8'), 'key: value\n');
+});
+
+// 各客户端要求的接口地址形态不同：WorkBuddy 与 Trae 系要完整路径，
+// ZCode 与 DSH 要 base URL。传错会拼出重复路由。
+test('Trae 条目补全完整路径，ZCode/DSH 保持 base URL 不重复拼接', async () => {
+  const base = 'http://127.0.0.1:41980/v1';
+  const full = `${base}/chat/completions`;
+  // Trae 收到 base URL 时自行补路径
+  assert.equal(traeEntry({ id: 'a', name: 'A' }, base).base_url, full);
+  // 已经带路径时不重复追加
+  assert.equal(traeEntry({ id: 'a', name: 'A' }, full).base_url, full);
+
+  const zcode = createClients({ home: 'C:\h', platform: 'win32' }).find(c => c.id === 'zcode');
+  const rule = zcodeMerge({ config: {} }, MODELS, base, 'k').document.config.providerConfigRules.providerRules[0];
+  assert.equal(rule.config.api.baseUrl, base, 'ZCode 只写 base URL，不带 /chat/completions');
+
+  const entry = dshProviderEntry(MODELS, base, 'ENV');
+  assert.equal(entry.config.providers['ow-bridge'].baseURL, base, 'DSH 只写 base URL');
 });

@@ -95,6 +95,14 @@ function clientById(id) {
   return client.id === 'workbuddy' && modelsFile ? { ...client, locate: () => modelsFile } : client;
 }
 
+// Each client expects the endpoint in its own shape: WorkBuddy and the Trae family want the
+// full completions path, while ZCode and DeepSeek Harness take a bare base URL and append the
+// route themselves. Sending the full path to the latter produces a doubled route.
+const fullPath = client => client.kind === 'vscdb' || client.id === 'workbuddy';
+function endpointFor(client) {
+  return fullPath(client) ? `${endpoint}/chat/completions` : endpoint;
+}
+
 // Publish (or clear, when the model list is empty) the given models into every chosen client.
 // Failures are collected per client so one bad target cannot block the others.
 function syncPublished(published = publishedModels()) {
@@ -106,8 +114,8 @@ function syncPublished(published = publishedModels()) {
         try {
           const client = clientById(id);
           results.push(published.length
-            ? await importIntoClient(client, published, `${endpoint}/chat/completions`, key)
-            : await removeFromClient(client, published, `${endpoint}/chat/completions`, key));
+            ? await importIntoClient(client, published, endpointFor(client), key)
+            : await removeFromClient(client, published, endpointFor(client), key));
         }
         catch (e) { results.push({ id, label: id, error: e.message }); }
       }

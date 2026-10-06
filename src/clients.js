@@ -49,7 +49,8 @@ export function traeEntry(model, endpoint, { toolCalls = true } = {}) {
     name: `${TRAE_PROVIDER}//${id}`,
     display_name: id,
     provider: TRAE_PROVIDER,
-    base_url: `${endpoint}/chat/completions`,
+    // Trae stores the full route and appends nothing, so the path belongs here.
+    base_url: endpoint.endsWith('/chat/completions') ? endpoint : `${endpoint}/chat/completions`,
     ak: null,
     sk: null,
     auth_type: 0,
