@@ -1,13 +1,15 @@
 // 多客户端导入的单元测试：覆盖 ZCode provider 合并、WorkBuddy 兼容行为、
-// Trae 系 vscdb 写入与清理，以及客户端探测。
+// DeepSeek Harness 的 YAML provider 与凭据、Trae 系 vscdb 写入与清理，以及客户端探测。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import yaml from 'js-yaml';
 import { createClients, OWNER, ZCODE_PROVIDER_ID, TRAE_GROUPS } from '../src/clients.js';
 import { importIntoClient, removeFromClient, detectClients } from '../src/import-service.js';
+import { parsePatch } from '../src/dsh-config.js';
 
 const MODELS = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
 // 客户端发出的 model 字段是带前缀的显示名，导入必须使用同一个 id
@@ -171,8 +173,69 @@ test('未安装的客户端探测路径不存在的 APPDATA 时返回 null', asy
   assert.ok(list.find(c => c.id === 'workbuddy').locate({ env: {} }));
 });
 
-test('macOS 仅保留 WorkBuddy，Windows 提供全部七个目标', () => {
+test('macOS 仅保留 WorkBuddy，Windows 提供全部八个目标', () => {
   assert.deepEqual(createClients({ home: '/h', platform: 'darwin' }).map(c => c.id), ['workbuddy']);
   assert.deepEqual(createClients({ home: 'C:\\h', platform: 'win32' }).map(c => c.id),
-    ['workbuddy', 'zcode', 'traecodecn', 'traecode', 'traeworkcn', 'qodercn', 'qoder']);
+    ['workbuddy', 'zcode', 'dsh', 'traecodecn', 'traecode', 'traeworkcn', 'qodercn', 'qoder']);
+});
+// DeepSeek Harness 用纯 YAML 描述 provider，且密钥走环境变量引用，可全自动导入。
+test('DeepSeek Harness 写入 provider 与凭据，不动用户其它条目，清理后完全还原', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-dsh-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const patch = path.join(root, 'cordis.patch.yml');
+  const credentials = path.join(root, '.credentials.yaml');
+  // 用户已有自己的 provider、默认模型与凭据，导入后必须全部保留
+  const before = [
+    { id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: 'ide2api', model: 'workbuddy_cn-Deepseek-V4.1-Flash' } },
+    { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { ide2api: { baseURL: 'https://example.test/v1', models: [{ id: 'a' }] } } } },
+    { id: 'ui-theme', name: '@deepseek-ai/dsh-client-ui-theme', config: { preference: 'dark' } },
+  ];
+  await fs.writeFile(patch, yaml.dump(before));
+  await fs.writeFile(credentials, yaml.dump({ version: 1, refs: { IDE2API_API_KEY: 'keep-me' } }));
+  const base = createClients({ home: root, platform: 'win32' }).find(c => c.id === 'dsh');
+  const dsh = { ...base, locate: () => patch, credentials: () => credentials };
+  assert.ok(base, 'dsh 客户端已注册');
+  // dsh 从配置读取能力声明，因此图片支持必须写进 input，否则附件会被静默丢弃
+  const withImage = [{ id: 'a', name: 'A', images: true }, { id: 'b', name: 'B' }];
+
+  const result = await importIntoClient(dsh, withImage, 'http://127.0.0.1:41980/v1', 'bridge-secret');
+  assert.equal(result.changed, true);
+  assert.equal(result.needsKey, undefined, '密钥可代写，无需用户手动补填');
+  const after = parsePatch(await fs.readFile(patch, 'utf8'));
+  // 本应用的 provider 追加在末尾，用户原有条目逐条不变
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.equal(after.filter(e => e.id === 'agent-default-model').length, 1, '不产生重复的默认模型条目');
+  const provider = after.find(e => e.id === 'ow-bridge-llm').config.providers['ow-bridge'];
+  assert.equal(provider.baseURL, 'http://127.0.0.1:41980/v1');
+  assert.equal(provider.api, 'openai-completions');
+  assert.equal(provider.apiKeyEnv, 'OW_BRIDGE_API_KEY', '密钥通过环境变量名引用，不写入 patch');
+  assert.deepEqual(provider.models.map(m => m.id), IDS, '模型 id 使用客户端可见名');
+  assert.deepEqual(provider.models[0].input, ['text', 'image'], '支持图片的模型声明 image 输入');
+
+  // 凭据写入本应用的键，用户原有键保留
+  const creds = yaml.load(await fs.readFile(credentials, 'utf8'));
+  assert.equal(creds.refs.IDE2API_API_KEY, 'keep-me');
+  assert.equal(creds.refs.OW_BRIDGE_API_KEY, 'bridge-secret');
+
+  // 重复导入不写入
+  assert.equal((await importIntoClient(dsh, withImage, 'http://127.0.0.1:41980/v1', 'bridge-secret')).changed, false);
+
+  // 清理后 patch 与凭据都回到原状
+  await removeFromClient(dsh, withImage, 'http://127.0.0.1:41980/v1', 'bridge-secret');
+  assert.deepEqual(parsePatch(await fs.readFile(patch, 'utf8')), before);
+  const credsAfter = yaml.load(await fs.readFile(credentials, 'utf8'));
+  assert.equal(credsAfter.refs.OW_BRIDGE_API_KEY, undefined, '清理后不残留密钥');
+  assert.equal(credsAfter.refs.IDE2API_API_KEY, 'keep-me');
+});
+
+test('dsh patch 格式非法时拒绝写入', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-dsh-bad-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const patch = path.join(root, 'cordis.patch.yml');
+  const credentials = path.join(root, '.credentials.yaml');
+  await fs.writeFile(patch, 'key: value\n');
+  await fs.writeFile(credentials, 'refs: {}\n');
+  const dsh = { ...createClients({ home: root, platform: 'win32' }).find(c => c.id === 'dsh'), locate: () => patch, credentials: () => credentials };
+  await assert.rejects(importIntoClient(dsh, MODELS, 'e', 'k'), /格式无法识别/);
+  assert.equal(await fs.readFile(patch, 'utf8'), 'key: value\n');
 });

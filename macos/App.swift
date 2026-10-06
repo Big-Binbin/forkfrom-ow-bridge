@@ -305,7 +305,7 @@ struct Dashboard: View {
                 Spacer()
                 Toggle("使用系统代理", isOn: Binding(get: { app.status["useSystemProxy"] as? Bool ?? false }, set: { app.setSystemProxy($0) }))
                     .toggleStyle(.switch).disabled(app.changingProxy || checking || (!ready && app.status["phase"] as? String != "error"))
-                Text("使用问题在抖音/视频号\n@娄老师说的对")
+                Text("OW Bridge 多客户端版\nZCode / Trae系 / WorkBuddy")
                     .font(.caption).foregroundColor(.secondary).lineSpacing(4).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }.padding(24).frame(width: 205).frame(maxHeight: .infinity).background(Color(nsColor: .controlBackgroundColor))
             Divider()

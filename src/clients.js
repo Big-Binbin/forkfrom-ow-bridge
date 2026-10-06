@@ -81,6 +81,17 @@ function vscdbClient({ id, label, roaming, note }) {
   };
 }
 
+// DeepSeek Harness composes its configuration from bundle layers plus a user patch file.
+// The patch is plain YAML and the API key is referenced by environment-variable name, so this
+// client needs no manual step after import.
+function dshClient({ id, label, homeDir }) {
+  return {
+    id, label, group: 'chat', kind: 'yaml', auto: true,
+    locate: () => path.win32.join(homeDir, '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'),
+    credentials: () => path.win32.join(homeDir, '.dsh', '.credentials.yaml'),
+  };
+}
+
 // WorkBuddy: ~/.workbuddy/models.json, either a bare array or { models: [...] }.
 // Returns the next document; this app's previous entries are dropped and new ones appended,
 // while the user's own entries keep their order.
@@ -177,6 +188,7 @@ export function createClients({ env = process.env, home, platform = process.plat
       file: path.win32.join(homeDir, '.zcode', 'v2', 'provider_config.json'),
       merge: zcodeMerge,
     }));
+    clients.push(dshClient({ id: 'dsh', label: 'DeepSeek Harness', homeDir }));
     for (const c of [
       { id: 'traecodecn', label: 'TraeCode CN', roaming: 'Trae CN' },
       { id: 'traecode', label: 'TraeCode', roaming: 'Trae' },

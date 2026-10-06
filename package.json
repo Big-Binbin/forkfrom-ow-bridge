@@ -16,6 +16,7 @@
     "build:linux": "electron-builder --linux AppImage --x64 --publish never"
   },
   "dependencies": {
+    "js-yaml": "4.3.2",
     "tar": "7.5.22",
     "undici": "^7.30.0"
   },
@@ -23,7 +24,7 @@
     "electron": "44.4.5",
     "electron-builder": "26.15.3"
   },
-  "description": "OW Bridge — 让 WorkBuddy / ZCode / Trae 系等 AI 客户端使用 OpenCode 免费模型",
+  "description": "OW Bridge — 让 WorkBuddy / ZCode / DeepSeek Harness / Trae 系等 AI 客户端使用 OpenCode 免费模型",
   "author": "OW Bridge",
   "main": "desktop/main.cjs",
   "build": {
@@ -60,5 +61,8 @@
       "category": "Utility"
     },
     "icon": "desktop/icon.png"
+  },
+  "allowScripts": {
+    "electron@44.4.5": true
   }
 }

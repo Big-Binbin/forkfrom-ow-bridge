@@ -13,6 +13,29 @@ import { replaceWithRetry } from './atomic.js';
 import { writeTraeModels, removeTraeModels } from './trae-store.js';
 import { createClients, OWNER, GROUPS } from './clients.js';
 import { clientModelID } from './model-status.js';
+import yaml from 'js-yaml';
+import { dshMerge, parsePatch, stringifyPatch, DSH_KEY_ENV } from './dsh-config.js';
+
+// dsh reads an API key from an environment variable, so the patch only names the variable and
+// the value goes into .credentials.yaml under refs. Existing refs are preserved.
+async function writeDshCredentials(file, key, required) {
+  const current = await fs.readFile(file, 'utf8').catch(e => {
+    if (e.code === 'ENOENT') return null;
+    throw e;
+  });
+  if (current === null && !required) return false;
+  const document = current ? (yaml.load(current) ?? {}) : {};
+  const refs = { ...(document.refs ?? {}) };
+  if (key === null) {
+    if (!(DSH_KEY_ENV in refs)) return false;
+    delete refs[DSH_KEY_ENV];
+  } else {
+    if (refs[DSH_KEY_ENV] === key) return false;
+    refs[DSH_KEY_ENV] = key;
+  }
+  await atomicWrite(file, stringifyPatch({ ...document, refs }));
+  return true;
+}
 
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
@@ -41,10 +64,30 @@ async function withLock(file, run) {
   finally { await handle.close(); await fs.unlink(lockFile).catch(() => {}); }
 }
 
+// Import into or remove from a dsh profile. The patch file and the credentials file are written
+// together, because a provider without its key resolves to an unauthorised request.
+async function dshWrite(client, models, endpoint, key, removing) {
+  const file = client.locate({ env: process.env });
+  const patch = parsePatch(await fs.readFile(file, 'utf8').catch(e => {
+    if (e.code === 'ENOENT') return '';
+    throw e;
+  }));
+  const result = dshMerge(patch, removing ? [] : models, endpoint, DSH_KEY_ENV);
+  const text = stringifyPatch(result.document);
+  const current = await fs.readFile(file, 'utf8').catch(() => null);
+  const changed = (current ?? '') !== text;
+  if (changed) {
+    if (current !== null) await fs.writeFile(`${file}.ow-bridge-${Date.now()}.bak`, current, { mode: 0o600, flag: 'wx' });
+    await atomicWrite(file, text);
+  }
+  // Removing the provider must also drop the key, or a stale secret is left lying around.
+  await writeDshCredentials(client.credentials(), removing ? null : key, false);
+  return { changed, count: removing ? 0 : models.length, label: client.label, id: client.id };
+}
+
 // Read a JSON client config, or null when the file is absent. A config whose top level matches
 // none of the supported shapes is refused rather than overwritten with our own.
-async function readJson(file, { requireExisting = false } = {}) {
-  const text = await fs.readFile(file, 'utf8').catch(error => {
+async function readJson(file, { requireExisting = false } = {}) {  const text = await fs.readFile(file, 'utf8').catch(error => {
     if (error.code === 'ENOENT' && !requireExisting) return null;
     throw error;
   });
@@ -64,6 +107,7 @@ export async function importIntoClient(client, models, endpoint, key, { requireE
     const result = await writeTraeModels(file, models, endpoint);
     return { ...result, label: client.label, id: client.id, needsKey: true, note: client.note, apiKey: key };
   }
+  if (client.kind === 'yaml') return dshWrite(client, models, endpoint, key, false);
   return withLock(file, async () => {
     const document = await readJson(file, { requireExisting });
     // Merge against an empty document when the client has no config yet.
@@ -97,6 +141,7 @@ export async function removeFromClient(client, models, endpoint, key, options = 
     const result = await removeTraeModels(file, models.map(m => clientModelID(m)));
     return { ...result, label: client.label, id: client.id };
   }
+  if (client.kind === 'yaml') return dshWrite(client, models, endpoint, key, true);
   return withLock(file, async () => {
     const document = await readJson(file, { requireExisting: false });
     if (document === null) return { changed: false, count: 0, label: client.label, id: client.id };

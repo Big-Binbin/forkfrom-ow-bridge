@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createClients } from '../src/clients.js';
 import { importIntoClient, removeFromClient, detectClients } from '../src/import-service.js';
+import { parsePatch } from '../src/dsh-config.js';
 
 const home = process.env.USERPROFILE;
 const clients = createClients({ env: process.env, home });
@@ -22,7 +23,7 @@ for (const c of await detectClients({ env: process.env, home })) {
 }
 
 const work = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-real-'));
-for (const id of ['workbuddy', 'zcode']) {
+for (const id of ['workbuddy', 'zcode', 'dsh']) {
   const client = clients.find(c => c.id === id);
   const real = client.locate({ env: process.env, home });
   const text = await fs.readFile(real, 'utf8').catch(() => null);
@@ -31,6 +32,13 @@ for (const id of ['workbuddy', 'zcode']) {
   const copy = path.join(work, path.basename(real));
   await fs.writeFile(copy, text);
   const target = { ...client, locate: () => copy };
+  if (client.credentials) {
+    // dsh 的密钥写在另一个文件里，一并复制并在副本上验证
+    const credReal = client.credentials();
+    const credCopy = path.join(work, '.credentials.yaml');
+    await fs.writeFile(credCopy, await fs.readFile(credReal, 'utf8'));
+    target.credentials = () => credCopy;
+  }
 
   console.log(`\n--- ${client.label}（真实配置副本 ${text.length} 字节） ---`);
   console.log('导入:', JSON.stringify(await importIntoClient(target, models, endpoint, key)));
@@ -44,9 +52,20 @@ for (const id of ['workbuddy', 'zcode']) {
   await removeFromClient(target, models, endpoint, key);
   const restored = await fs.readFile(copy, 'utf8');
   // 按语义比对：写文件时统一补一个末尾换行，字节层面可能与原始相差一个 \n
-  const same = JSON.stringify(JSON.parse(restored)) === JSON.stringify(JSON.parse(text));
-  console.log('清理后内容与原始一致:', same ? '是' : '否 ← 需检查');
-  if (!same) await fs.writeFile(path.join(work, `${id}.差异.json`), restored);
+  const same = id === 'dsh'
+    ? JSON.stringify(parsePatch(restored)) === JSON.stringify(parsePatch(text))
+    : JSON.stringify(JSON.parse(restored)) === JSON.stringify(JSON.parse(text));
+  // 原始配置里可能已含本应用此前导入的条目（真实使用痕迹），清理会把它们一并移除，
+  // 因此这类情况下的正确预期是「只剩用户自有条目」，而非与原始逐条相同。
+  const original = id === 'dsh' ? parsePatch(text) : JSON.parse(text);
+  const list = id === 'dsh' ? original : (Array.isArray(original) ? original : original.models);
+  const hadOurs = (list ?? []).some(e => e?.buddyBridgeOwner === 'buddy-bridge-v1' || e?.id === 'ow-bridge-llm');
+  const after = id === 'dsh' ? parsePatch(restored) : JSON.parse(restored);
+  const afterList = id === 'dsh' ? after : (Array.isArray(after) ? after : after.models);
+  const oursGone = !(afterList ?? []).some(e => e?.buddyBridgeOwner === 'buddy-bridge-v1' || e?.id === 'ow-bridge-llm');
+  console.log('清理后本应用条目已移除:', oursGone ? '是' : '否 ← 需检查', hadOurs ? '（原始含本应用条目，属正常清理）' : '');
+  console.log('清理后内容与原始一致:', same ? '是' : hadOurs ? '否（本应用旧条目已被清理，符合预期）' : '否 ← 需检查');
+  if (!same && !hadOurs) await fs.writeFile(path.join(work, `${id}.差异.txt`), restored);
 }
 
 await fs.rm(work, { recursive: true, force: true });
